@@ -28,7 +28,7 @@ use function Laravel\Prompts\warning;
         {--admin-password= : Admin password}
         {--locale= : Site locale (e.g. en_US, fr_FR)}
         {--public= : Allow search engine indexing (true/false)}
-        {--theme= : Name of the theme to generate (defaults to "default" from meatpress/theme-default without interaction)}')]
+        {--theme= : Name of the theme to generate (without it, the project\'s own theme is activated when it has one)}')]
 class LaunchPadInstallCommand extends Command
 {
     /**
@@ -167,6 +167,15 @@ class LaunchPadInstallCommand extends Command
         $arguments = [];
         $theme = $this->option('theme');
 
+        // A project that ships its theme (the skeleton's themes/meat-theme) keeps
+        // it: activate it instead of generating another one from a template.
+        if ((! is_string($theme) || $theme === '') && ($existing = $this->projectTheme()) !== null) {
+            switch_theme($existing);
+            info(sprintf('Theme "%s" activated.', $existing));
+
+            return;
+        }
+
         if (is_string($theme) && $theme !== '') {
             $arguments['name'] = $theme;
         }
@@ -182,6 +191,32 @@ class LaunchPadInstallCommand extends Command
         $arguments['--activate'] = true;
 
         $this->call('meatpress:make:theme', $arguments);
+    }
+
+    /**
+     * The theme the project already ships, if any: WP_DEFAULT_THEME when it is
+     * one of them, otherwise the first theme found in the themes directory.
+     */
+    private function projectTheme(): ?string
+    {
+        $base = (string) config('theme.base_path', base_path('themes'));
+
+        if (! is_dir($base)) {
+            return null;
+        }
+
+        $themes = array_values(array_filter(
+            (array) scandir($base),
+            fn (string $entry): bool => $entry !== '' && $entry[0] !== '.' && is_file($base.'/'.$entry.'/style.css'),
+        ));
+
+        if ($themes === []) {
+            return null;
+        }
+
+        $preferred = defined('WP_DEFAULT_THEME') ? (string) constant('WP_DEFAULT_THEME') : null;
+
+        return in_array($preferred, $themes, true) ? $preferred : $themes[0];
     }
 
     public function runMigrations(): void
