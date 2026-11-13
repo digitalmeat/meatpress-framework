@@ -70,7 +70,10 @@ final class ConventionsServiceProvider extends ServiceProvider
             (bool) $config->get('meatpress.clean_head.emojis'),
         );
 
-        $action->add('init', [$cleanHead, 'unhookCoreAssets']);
+        // Unhooked right before WordPress enqueues them, so it works whenever
+        // this provider boots: "init" may already have fired at that point.
+        $action->add('wp_enqueue_scripts', [$cleanHead, 'unhookCoreAssets'], 0);
+        $action->add('admin_init', [$cleanHead, 'unhookCoreAssets']);
         $action->add('wp_enqueue_scripts', [$cleanHead, 'dequeueBlockStyles'], 100);
 
         if ($config->get('meatpress.acf_local_json.enabled')) {

@@ -29,10 +29,12 @@ final class ServiceProviderTest extends ConventionsTestCase
 
     public function test_hooks_are_registered(): void
     {
-        foreach (['wp_robots', 'save_post', 'init', 'wp_enqueue_scripts', 'acf/settings/save_json', 'acf/settings/load_json'] as $hook) {
+        foreach (['wp_robots', 'save_post', 'admin_init', 'wp_enqueue_scripts', 'acf/settings/save_json', 'acf/settings/load_json'] as $hook) {
             $this->assertTrue($this->hooks->has($hook), "Hook {$hook} is not registered");
         }
 
-        $this->assertSame(100, $this->hooks->registered['wp_enqueue_scripts'][0]['priority']);
+        $priorities = array_column($this->hooks->registered['wp_enqueue_scripts'], 'priority');
+
+        $this->assertSame([0, 100], $priorities, 'Core assets are unhooked first, block styles dequeued last');
     }
 }

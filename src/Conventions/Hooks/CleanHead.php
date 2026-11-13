@@ -17,7 +17,8 @@ final class CleanHead
     ) {}
 
     /**
-     * Runs on "init": unhooks the core callbacks before they enqueue anything.
+     * Runs first on "wp_enqueue_scripts" (and on "admin_init"): unhooks the core
+     * callbacks before they enqueue anything.
      */
     public function unhookCoreAssets(): void
     {
