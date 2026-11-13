@@ -1,0 +1,222 @@
+<?php
+
+declare(strict_types=1);
+
+use Brain\Monkey\Functions;
+use Illuminate\Config\Repository;
+use Illuminate\Console\OutputStyle;
+use Illuminate\Container\Container;
+use Illuminate\Filesystem\Filesystem;
+use Laravel\Prompts\ConfirmPrompt;
+use Laravel\Prompts\Prompt;
+use Meatpress\Theme\Application\Services\ThemeAvailability;
+use Meatpress\Theme\Domain\Contracts\ThemeModuleInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeRegistrarInterface;
+use Meatpress\Theme\Domain\Models\ThemeMetadata;
+use Meatpress\Theme\UI\Console\MakeThemeCommand;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Input\InputDefinition;
+use Symfony\Component\Console\Output\BufferedOutput;
+
+/**
+ * Which case activates the generated theme: a site with no theme gets it, a site with one
+ * keeps its own unless told otherwise, and --activate / --no-activate settle it.
+ */
+function activationCommand(array $options, bool $themeMissing): MakeThemeCommand
+{
+    $command = new MakeThemeCommand(new Repository, new Filesystem);
+    $command->setLaravel(app());
+
+    $registrar = Mockery::mock(ThemeRegistrarInterface::class);
+    $registrar->shouldReceive('getActiveTheme')->andReturn($themeMissing ? null : Mockery::mock(ThemeModuleInterface::class));
+    $container = new Container;
+    $container->instance(ThemeRegistrarInterface::class, $registrar);
+
+    app()->instance(ThemeAvailability::class, new ThemeAvailability($container));
+
+    $input = new ArrayInput(['name' => 'my-journal', ...$options], $command->getDefinition());
+    $input->setInteractive(false);
+
+    $command->setInput($input);
+    $command->setOutput(new OutputStyle($input, new BufferedOutput));
+
+    (new ReflectionProperty($command, 'theme'))->setValue($command, new ThemeMetadata('my-journal', '/tmp/themes'));
+
+    return $command;
+}
+
+function activates(MakeThemeCommand $command): bool
+{
+    $switched = [];
+    Functions\when('switch_theme')->alias(function (string $stylesheet) use (&$switched): void {
+        $switched[] = $stylesheet;
+    });
+    // Writing the option directly is activating too, as the command once did.
+    Functions\when('update_option')->alias(function (string $option, mixed $value) use (&$switched): bool {
+        if ($option === 'stylesheet') {
+            $switched[] = $value;
+        }
+
+        return true;
+    });
+
+    (fn () => $this->promptAndSetActiveTheme())->call($command);
+
+    return $switched === ['my-journal'];
+}
+
+beforeEach(function (): void {
+    Functions\when('did_action')->justReturn(1);
+    Functions\when('get_stylesheet')->justReturn('twentytwentyfive');
+    Functions\when('get_stylesheet_directory')->justReturn('/nope');
+});
+
+it('activates the theme on a site that has none, without asking', function (): void {
+    expect(activates(activationCommand([], themeMissing: true)))->toBeTrue();
+});
+
+it('keeps the active theme of a site that has one, when nobody answers', function (): void {
+    expect(activates(activationCommand([], themeMissing: false)))->toBeFalse();
+});
+
+it('activates with --activate, even over another theme', function (): void {
+    expect(activates(activationCommand(['--activate' => true], themeMissing: false)))->toBeTrue();
+});
+
+it('leaves the site alone with --no-activate, even when it has no theme', function (): void {
+    expect(activates(activationCommand(['--no-activate' => true], themeMissing: true)))->toBeFalse();
+});
+
+it('does nothing when the generated theme is already the active one', function (): void {
+    Functions\when('get_stylesheet')->justReturn('my-journal');
+
+    expect(activates(activationCommand(['--activate' => true], themeMissing: false)))->toBeFalse();
+});
+
+/**
+ * A first install runs the command with WordPress only partly loaded: activate_plugin() crashed
+ * there in plugin_basename(), so the activation moves to a fresh process.
+ *
+ * @return array{0: array<int, string>, 1: array<int, string>} Plugins activated here, plugins handed to a new process.
+ */
+function pluginActivation(int $pluginsLoaded): array
+{
+    Functions\when('did_action')->justReturn($pluginsLoaded);
+    Prompt::fallbackWhen(true);
+    ConfirmPrompt::fallbackUsing(fn (): bool => true);
+
+    $command = new class(new Repository, new Filesystem) extends MakeThemeCommand
+    {
+        /** @var array<int, string> */
+        public array $handedOver = [];
+
+        /** @var array<int, string> */
+        public array $activated = [];
+
+        protected function wordPressCanActivatePlugins(): bool
+        {
+            return true;
+        }
+
+        protected function activatePlugin(string $pluginFile): mixed
+        {
+            $this->activated[] = $pluginFile;
+
+            return null;
+        }
+
+        protected function resolveWordPressPlugins(array $packages): array
+        {
+            return ['wp-plugin/woocommerce' => 'woocommerce'];
+        }
+
+        protected function findPluginEntryFile(string $slug): string
+        {
+            return $slug.'/'.$slug.'.php';
+        }
+
+        protected function activatePluginsInNewProcess(array $plugins): void
+        {
+            $this->handedOver = array_values($plugins);
+        }
+    };
+    $command->setLaravel(app());
+
+    $input = new ArrayInput([], new InputDefinition);
+    $input->setInteractive(false);
+
+    $command->setInput($input);
+    $command->setOutput(new OutputStyle($input, new BufferedOutput));
+
+    (fn () => $this->activateWordPressPlugins(['wp-plugin/woocommerce']))->call($command);
+
+    return [$command->activated, $command->handedOver];
+}
+
+it('hands plugin activation to a new process while WordPress is not fully loaded', function (): void {
+    [$activated, $handedOver] = pluginActivation(pluginsLoaded: 0);
+
+    expect($activated)->toBe([])
+        ->and($handedOver)->toBe(['woocommerce']);
+});
+
+it('activates plugins in place once WordPress is fully loaded', function (): void {
+    [$activated, $handedOver] = pluginActivation(pluginsLoaded: 1);
+
+    expect($activated)->toBe(['woocommerce/woocommerce.php'])
+        ->and($handedOver)->toBe([]);
+});
+
+/**
+ * A first install runs the command with WordPress only partly loaded, where switch_theme()
+ * fails on functions that are not defined yet: the activation moves to a fresh process.
+ *
+ * @return array<int, array{0: string, 1: array<int, string>}> The commands run in a new process.
+ */
+function themeActivationProcesses(int $pluginsLoaded, bool $processSucceeds = true): array
+{
+    Functions\when('did_action')->justReturn($pluginsLoaded);
+    $switched = [];
+    Functions\when('switch_theme')->alias(function (string $stylesheet) use (&$switched): void {
+        $switched[] = $stylesheet;
+    });
+
+    $command = new class(new Repository, new Filesystem) extends MakeThemeCommand
+    {
+        /** @var array<int, array{0: string, 1: array<int, string>}> */
+        public array $processes = [];
+
+        public bool $processSucceeds = true;
+
+        protected function runInNewProcess(string $command, array $arguments): bool
+        {
+            $this->processes[] = [$command, $arguments];
+
+            return $this->processSucceeds;
+        }
+    };
+    $command->processSucceeds = $processSucceeds;
+    $command->setDefinition((new MakeThemeCommand(new Repository, new Filesystem))->getDefinition());
+    $command->setLaravel(app());
+
+    $input = new ArrayInput(['name' => 'my-journal', '--activate' => true], $command->getDefinition());
+    $input->setInteractive(false);
+
+    $command->setInput($input);
+    $command->setOutput(new OutputStyle($input, new BufferedOutput));
+    (new ReflectionProperty($command, 'theme'))->setValue($command, new ThemeMetadata('my-journal', '/tmp/themes'));
+
+    (fn () => $this->promptAndSetActiveTheme())->call($command);
+
+    expect($switched)->toBe([]);
+
+    return $command->processes;
+}
+
+it('hands the theme activation to a new process while WordPress is not fully loaded', function (): void {
+    expect(themeActivationProcesses(pluginsLoaded: 0))->toBe([['meatpress:theme:activate', ['my-journal']]]);
+});
+
+it('keeps going when the new process cannot activate the theme', function (): void {
+    expect(themeActivationProcesses(pluginsLoaded: 0, processSucceeds: false))->toHaveCount(1);
+});

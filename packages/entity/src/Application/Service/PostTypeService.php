@@ -1,0 +1,26 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Entity\Application\Service;
+
+use Meatpress\Entity\Domain\Model\PostType;
+use Meatpress\Entity\Port\Out\PostTypeRegistryPort;
+
+class PostTypeService
+{
+    public function __construct(PostTypeRegistryPort $postTypeRegistry, private readonly EntityRegistrationService $entityRegistrationService) {}
+
+    public function createPostType(string $slug, string $singular, string $plural): PostType
+    {
+        $postType = new PostType($slug, $singular, $plural);
+        $this->entityRegistrationService->registerEntity($postType);
+
+        return $postType;
+    }
+
+    public function register(PostType $postType): void
+    {
+        $this->entityRegistrationService->registerEntity($postType);
+    }
+}

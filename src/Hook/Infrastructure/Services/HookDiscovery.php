@@ -1,0 +1,178 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Hook\Infrastructure\Services;
+
+use Meatpress\Attributes\Action;
+use Meatpress\Attributes\Async;
+use Meatpress\Attributes\Filter;
+use Meatpress\Discovery\Domain\Contracts\DiscoveryInterface;
+use Meatpress\Discovery\Domain\Contracts\DiscoveryLocationInterface;
+use Meatpress\Discovery\Domain\Contracts\ReflectionCacheInterface;
+use Meatpress\Discovery\Domain\Services\HasInstancePool;
+use Meatpress\Discovery\Domain\Services\IsDiscovery;
+use Meatpress\Hook\Application\Services\AsyncDeclarationFailures;
+use Meatpress\Hook\Domain\Contract\Action as ActionContract;
+use Meatpress\Hook\Domain\Contract\Filter as FilterContract;
+use Psr\Log\LoggerInterface;
+use Spatie\StructureDiscoverer\Data\DiscoveredClass;
+use Spatie\StructureDiscoverer\Data\DiscoveredStructure;
+
+/**
+ * Hook Discovery
+ *
+ * Discovers methods decorated with Action and Filter attributes and registers them
+ * as WordPress hooks. This discovery class scans for methods that have
+ * the #[Action] or #[Filter] attributes and processes them through the
+ * Hook services for registration.
+ */
+final class HookDiscovery implements DiscoveryInterface
+{
+    use HasInstancePool;
+    use IsDiscovery;
+
+    /**
+     * Create a new Hook discovery
+     *
+     * @param  ActionContract  $actionService  The action service for hook registration
+     * @param  FilterContract  $filterService  The filter service for hook registration
+     */
+    public function __construct(
+        private readonly ActionContract $actionService,
+        private readonly FilterContract $filterService,
+        private readonly ?LoggerInterface $logger = null,
+        private readonly ?AsyncDeclarationFailures $asyncFailures = null,
+    ) {}
+
+    /**
+     * {@inheritDoc}
+     *
+     * Discovers methods with Action and Filter attributes and collects them for registration.
+     * Only processes public methods that have hook attributes.
+     */
+    public function discover(DiscoveryLocationInterface $location, DiscoveredStructure $structure, ?ReflectionCacheInterface $reflectionCache = null): void
+    {
+        // Only process classes
+        if (! $structure instanceof DiscoveredClass) {
+            return;
+        }
+
+        // Skip abstract classes
+        if ($structure->isAbstract) {
+            return;
+        }
+
+        try {
+            $className = $structure->namespace.'\\'.$structure->name;
+            $methods = $reflectionCache->getPublicMethods($className);
+
+            foreach ($methods as $method) {
+                // Check for Action attributes
+                $actionAttributes = $method->getAttributes(Action::class);
+                foreach ($actionAttributes as $actionAttribute) {
+                    $this->getItems()->add($location, [
+                        'type' => 'action',
+                        'class' => $className,
+                        'method' => $method->getName(),
+                        'attribute' => $actionAttribute,
+                        'reflection_method' => $method,
+                    ]);
+                }
+
+                // Check for Filter attributes
+                $filterAttributes = $method->getAttributes(Filter::class);
+                foreach ($filterAttributes as $filterAttribute) {
+                    $this->getItems()->add($location, [
+                        'type' => 'filter',
+                        'class' => $className,
+                        'method' => $method->getName(),
+                        'attribute' => $filterAttribute,
+                        'reflection_method' => $method,
+                    ]);
+                }
+
+                // An #[Async] with neither #[Action] nor #[Filter] has nothing to apply to
+                $asyncAttributes = $method->getAttributes(Async::class);
+                if ($asyncAttributes !== [] && $actionAttributes === [] && $filterAttributes === []) {
+                    $this->getItems()->add($location, [
+                        'type' => 'async',
+                        'class' => $className,
+                        'method' => $method->getName(),
+                        'attribute' => $asyncAttributes[0],
+                        'reflection_method' => $method,
+                    ]);
+                }
+            }
+        } catch (\Throwable) {
+            // Skip classes that can't be reflected
+            // This might happen for classes with missing dependencies
+            return;
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * Applies discovered hook methods by registering them through the Hook services.
+     * Each discovered method is registered as an action or filter hook.
+     */
+    public function apply(): void
+    {
+        foreach ($this->getItems() as $discoveredItem) {
+            [
+                'type' => $hookType,
+                'class' => $className,
+                'method' => $methodName,
+                'attribute' => $hookAttribute,
+                'reflection_method' => $reflectionMethod
+            ] = $discoveredItem;
+
+            try {
+                if ($hookType === 'action') {
+                    /** @var Action $action */
+                    $action = $hookAttribute->newInstance();
+
+                    // Create instance and call method directly; asynchronously when #[Async] says so
+                    $instance = $this->getInstanceFromPool($className);
+                    (new AsyncAttributeRegistrar($this->actionService, $this->logger, $this->asyncFailures))->register(
+                        hook: $action->hook,
+                        instance: $instance,
+                        method: $reflectionMethod,
+                        priority: $action->priority
+                    );
+                } elseif ($hookType === 'async') {
+                    $this->logger?->error(sprintf('#[Async] on %s::%s() is ignored: the method has no #[Action] to make asynchronous.', ltrim($className, '\\'), $methodName));
+                    $this->asyncFailures?->fail($className, $methodName, 'the method has no #[Action] to make asynchronous');
+                } elseif ($hookType === 'filter') {
+                    /** @var Filter $filter */
+                    $filter = $hookAttribute->newInstance();
+
+                    if (AsyncAttributeRegistrar::isDeclaredOn($reflectionMethod)) {
+                        $this->logger?->error(sprintf('#[Async] on %s::%s() is ignored: a filter returns a value to its caller and cannot be deferred.', ltrim($className, '\\'), $methodName));
+                        $this->asyncFailures?->fail($className, $methodName, 'a filter returns a value to its caller and cannot be deferred');
+                    }
+
+                    // Create instance and call method directly
+                    $instance = $this->getInstanceFromPool($className);
+                    $this->filterService->add(
+                        hooks: $filter->hook,
+                        callback: [$instance, $methodName],
+                        priority: $filter->priority
+                    );
+                }
+            } catch (\Throwable $e) {
+                // Log the error but continue with other hooks
+                $this->logger?->error(sprintf('Failed to register %s hook from method %s::%s', $hookType, $className, $methodName), ['exception' => $e]);
+            }
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function getIdentifier(): string
+    {
+        return 'hooks';
+    }
+}

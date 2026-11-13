@@ -1,0 +1,13 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Events\WordPress\Post;
+
+/**
+ * Event fired when a new post is created.
+ *
+ * This event is triggered when a post transitions from auto-draft to draft status,
+ * indicating that a new post has been created in the system.
+ */
+class PostCreated extends PostEvent {}

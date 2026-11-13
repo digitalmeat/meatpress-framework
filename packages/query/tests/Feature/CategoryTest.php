@@ -1,0 +1,54 @@
+<?php
+
+declare(strict_types=1);
+
+use Meatpress\Query\PostQuery;
+
+test('Category: cat', function () {
+    $args = PostQuery::select()
+        ->cat(1)
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'cat' => 1,
+    ]);
+});
+
+test('Category: category_name', function () {
+    $args = PostQuery::select()
+        ->categoryName('sales')
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'category_name' => 'sales',
+    ]);
+});
+
+test('Category: category__in', function () {
+    $args = PostQuery::select()
+        ->categoryIn([1, 2, 3])
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'category__in' => [1, 2, 3],
+    ]);
+});
+
+test('Category: category__not_in', function () {
+    $args = PostQuery::select()
+        ->categoryNotIn([1, 2, 3])
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'category__not_in' => [1, 2, 3],
+    ]);
+});
+
+test('Category: category__and', function () {
+    $args = PostQuery::select()
+        ->categoryAnd([1, 2, 3])
+        ->getArguments();
+
+    expect($args)->toHaveKey('category__and', [1, 2, 3])
+        ->and($args)->not->toHaveKey('category_and');
+});

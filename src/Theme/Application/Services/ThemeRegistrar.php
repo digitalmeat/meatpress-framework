@@ -1,0 +1,328 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Theme\Application\Services;
+
+use Illuminate\Foundation\Application;
+use Meatpress\BlockPattern\UI\PatternComponent;
+use Meatpress\Modules\Domain\Contracts\ModuleDiscoveryOrchestratorInterface;
+use Meatpress\Modules\Domain\Contracts\ModuleRepositoryInterface;
+use Meatpress\Modules\Infrastructure\Services\ModuleAssetManager;
+use Meatpress\Modules\Infrastructure\Services\ModuleComponentManager;
+use Meatpress\Modules\Infrastructure\Services\ModuleConfigurationLoader;
+use Meatpress\Modules\Infrastructure\Services\ModuleRouteLoader;
+use Meatpress\Theme\Domain\Contracts\ThemeModuleInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeRegistrarInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeService;
+use Meatpress\Theme\Domain\Models\ImageSize;
+use Meatpress\Theme\Domain\Models\Menus;
+use Meatpress\Theme\Domain\Models\Sidebar;
+use Meatpress\Theme\Domain\Models\Templates;
+use Meatpress\Theme\Domain\Models\ThemeInitializer;
+use Meatpress\Theme\Infrastructure\Models\LaravelThemeModule;
+use Meatpress\Theme\Infrastructure\Repositories\ThemeRepository;
+use Meatpress\Theme\Infrastructure\Services\Support;
+use Meatpress\Theme\Infrastructure\Services\WordPressThemeParser;
+use Psr\Container\ContainerInterface;
+use Psr\Log\LoggerInterface;
+
+/**
+ * Simplified theme self-registration service.
+ */
+class ThemeRegistrar implements ThemeRegistrarInterface
+{
+    private ?ThemeModuleInterface $activeTheme = null;
+
+    public function __construct(
+        protected ContainerInterface $app,
+        protected WordPressThemeParser $themeParser
+    ) {}
+
+    /**
+     * Register a theme as the active theme.
+     */
+    public function register(): ThemeModuleInterface
+    {
+        $themeName = get_stylesheet();
+        $themePath = get_stylesheet_directory();
+
+        // Parse theme headers if not provided
+        $styleCssPath = rtrim((string) $themePath, '/').'/style.css';
+        $themeData = $this->themeParser->parseThemeHeaders($styleCssPath);
+
+        // Create the theme module
+        $theme = $this->createThemeModule($themeName, $themePath);
+        $theme->registerAutoloading();
+        $theme->setHeaders($themeData);
+        $theme->setEnabled(true);
+
+        // Register as the active theme
+        $this->activeTheme = $theme;
+
+        // Invalidate repository cache and discover structures
+        $this->invalidateRepositoryCache();
+        $this->discoverThemeStructures($theme);
+
+        // Load theme configuration
+        $this->loadThemeConfiguration($theme);
+
+        // Setup theme components
+        $this->setupThemeComponents($theme);
+
+        // Setup theme assets and includes
+        $this->setupThemeAssets($theme);
+
+        // Load theme routes (api.php, web.php)
+        $this->loadThemeRoutes($theme);
+
+        // Load theme view paths via ThemeManager
+        if ($this->app->has(ThemeService::class)) {
+            $this->app->get(ThemeService::class)->load($themeName);
+        }
+
+        // Register and boot the theme
+        $theme->register();
+        $theme->boot();
+
+        return $theme;
+    }
+
+    /**
+     * Create theme module instance.
+     */
+    protected function createThemeModule(string $themeName, string $themePath): LaravelThemeModule
+    {
+        /** @var Application $app */
+        $app = $this->app->has('app') ? $this->app->get('app') : $this->app;
+
+        return new LaravelThemeModule($themeName, $themePath, $app);
+    }
+
+    /**
+     * Invalidate the theme repository cache.
+     */
+    protected function invalidateRepositoryCache(): void
+    {
+        if (! $this->app->has(ModuleRepositoryInterface::class)) {
+            return;
+        }
+
+        try {
+            $repository = $this->app->get(ModuleRepositoryInterface::class);
+
+            if ($repository instanceof ThemeRepository) {
+                $repository->resetCache();
+            }
+        } catch (\Exception $exception) {
+            $this->logError('Failed to invalidate theme repository cache: '.$exception->getMessage());
+        }
+    }
+
+    /**
+     * Perform on-demand discovery for theme structures.
+     */
+    protected function discoverThemeStructures(ThemeModuleInterface $theme): void
+    {
+        if (! $this->app->has(ModuleDiscoveryOrchestratorInterface::class)) {
+            return;
+        }
+
+        try {
+            $discoveryService = $this->app->get(ModuleDiscoveryOrchestratorInterface::class);
+
+            // Get the app directory path for the theme
+            $appPath = $this->getThemeAppPath($theme);
+            if ($appPath && is_dir($appPath)) {
+                $discoveryService->discover($appPath);
+            }
+        } catch (\Exception $exception) {
+            $this->logError(sprintf('Theme discovery error for %s: ', $theme->getName()).$exception->getMessage());
+        }
+    }
+
+    /**
+     * Get the app directory path for a theme
+     */
+    private function getThemeAppPath(ThemeModuleInterface $theme): ?string
+    {
+        $basePath = $theme->getPath();
+
+        // Check for app/ directory first (preferred)
+        $appPath = $basePath.'/app';
+        if (is_dir($appPath)) {
+            return $appPath;
+        }
+
+        // Fallback to src/ directory
+        $srcPath = $basePath.'/src';
+        if (is_dir($srcPath)) {
+            return $srcPath;
+        }
+
+        return null;
+    }
+
+    /**
+     * Process a discovered structure for the theme.
+     */
+    protected function processDiscoveredStructure($structure, string $scoutType, ThemeModuleInterface $theme): void
+    {
+        if (! $this->isDebugMode()) {
+            return;
+        }
+
+        $structureInfo = is_object($structure) && method_exists($structure, 'getFqn')
+            ? $structure->getFqn()
+            : 'unknown';
+
+        $this->logError(sprintf('Discovered %s in theme %s: %s', $scoutType, $theme->getName(), $structureInfo));
+    }
+
+    /**
+     * Get the currently registered active theme.
+     */
+    public function getActiveTheme(): ?ThemeModuleInterface
+    {
+        return $this->activeTheme;
+    }
+
+    /**
+     * Check if a theme is registered as active.
+     */
+    public function isThemeActive(string $themeName): bool
+    {
+        return $this->activeTheme?->getLowerName() === strtolower($themeName);
+    }
+
+    /**
+     * Reset the active theme registration.
+     */
+    public function resetActiveTheme(): void
+    {
+        $this->activeTheme = null;
+        $this->invalidateRepositoryCache();
+    }
+
+    /**
+     * Check if debug mode is enabled.
+     */
+    protected function isDebugMode(): bool
+    {
+        return defined('WP_DEBUG') && WP_DEBUG;
+    }
+
+    /**
+     * Log error message.
+     */
+    protected function logError(string $message): void
+    {
+        try {
+            $this->app->get(LoggerInterface::class)->error($message);
+        } catch (\Throwable) {
+        }
+    }
+
+    /**
+     * Load theme-specific configuration.
+     */
+    protected function loadThemeConfiguration(ThemeModuleInterface $theme): void
+    {
+        if (! $this->app->has(ModuleConfigurationLoader::class)) {
+            return;
+        }
+
+        try {
+            /** @var ModuleConfigurationLoader $configLoader */
+            $configLoader = $this->app->get(ModuleConfigurationLoader::class);
+
+            $configLoader->loadModuleConfiguration(
+                $theme->getPath(),
+                'theme'
+            );
+        } catch (\Exception $exception) {
+            $this->logError('Failed to load theme configuration: '.$exception->getMessage());
+        }
+    }
+
+    /**
+     * Setup theme-specific components.
+     */
+    protected function setupThemeComponents(ThemeModuleInterface $theme): void
+    {
+        if (! $this->app->has(ModuleComponentManager::class)) {
+            return;
+        }
+
+        try {
+            /** @var ModuleComponentManager $componentManager */
+            $componentManager = $this->app->get(ModuleComponentManager::class);
+
+            // Define theme-specific components
+            $themeComponents = [
+                ThemeInitializer::class,
+                PatternComponent::class,
+                Menus::class,
+                Support::class,
+                Sidebar::class,
+                Templates::class,
+                ImageSize::class,
+            ];
+
+            $moduleId = 'theme.'.$theme->getLowerName();
+
+            $componentManager->registerModuleComponents($moduleId, $themeComponents);
+            $componentManager->initializeModuleComponents($moduleId);
+        } catch (\Exception $exception) {
+            $this->logError('Failed to setup theme components: '.$exception->getMessage());
+        }
+    }
+
+    /**
+     * Load theme routes (api.php, web.php).
+     */
+    protected function loadThemeRoutes(ThemeModuleInterface $theme): void
+    {
+        if (! $this->app->has(ModuleRouteLoader::class)) {
+            return;
+        }
+
+        try {
+            /** @var ModuleRouteLoader $routeLoader */
+            $routeLoader = $this->app->get(ModuleRouteLoader::class);
+            $routeLoader->loadModuleRoutes($theme);
+        } catch (\Exception $exception) {
+            $this->logError('Failed to load theme routes: '.$exception->getMessage());
+        }
+    }
+
+    /**
+     * Setup theme assets and includes.
+     */
+    protected function setupThemeAssets(ThemeModuleInterface $theme): void
+    {
+        if (! $this->app->has(ModuleAssetManager::class)) {
+            return;
+        }
+
+        try {
+            /** @var ModuleAssetManager $assetManager */
+            $assetManager = $this->app->get(ModuleAssetManager::class);
+
+            // Setup asset management (theme always uses 'theme' as container name)
+            $assetManager->setupModuleAssets(
+                $theme->getLowerName(),
+                $theme->getPath(),
+                'theme'
+            );
+
+            // Load theme includes
+            $assetManager->loadModuleIncludes($theme->getPath());
+
+            // Register Blade directives
+            $assetManager->registerModuleBladeDirectives($theme->getPath());
+        } catch (\Exception $exception) {
+            $this->logError('Failed to setup theme assets: '.$exception->getMessage());
+        }
+    }
+}

@@ -1,0 +1,123 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Container\Container;
+use Illuminate\Contracts\Events\Dispatcher;
+use Meatpress\Route\Infrastructure\Models\Route;
+use Meatpress\Route\Infrastructure\Services\ExtendedRouter;
+use Mockery as m;
+
+/**
+ * Setup function to create mocks and the router instance for all tests
+ */
+function setupRouterTest(): array
+{
+    // Set up the event dispatcher mock
+    $events = m::mock(Dispatcher::class);
+    $events->shouldReceive('dispatch')->andReturn(null);
+
+    // Create container
+    $container = new Container;
+
+    // Configure the container with WordPress conditions
+    $container->instance('config', new class
+    {
+        public function get($key, $default = null)
+        {
+            if ($key === 'wordpress.conditions') {
+                return [
+                    'is_page' => 'page',
+                    'is_singular' => 'singular',
+                    'is_archive' => 'archive',
+                ];
+            }
+
+            return $default;
+        }
+    });
+
+    // Create router
+    $router = new ExtendedRouter($events, $container);
+
+    // Mock WordPress classes
+    mockWordPressClasses();
+
+    return [
+        'router' => $router,
+        'events' => $events,
+        'container' => $container,
+    ];
+}
+
+/**
+ * Mock WordPress classes
+ */
+function mockWordPressClasses(): void
+{
+    if (! class_exists('WP_Post')) {
+        eval('namespace { class WP_Post { public function __construct($post = null) {} } }');
+    }
+}
+
+/**
+ * Clean up after each test
+ */
+afterEach(function (): void {
+    Container::setInstance();
+});
+
+/**
+ * Test that the Router correctly creates new Route instances.
+ */
+test('router creates new route instances', function (): void {
+    $setup = setupRouterTest();
+    $router = $setup['router'];
+
+    // Create a route using the router
+    $route = $router->get('/test', fn (): string => 'test');
+
+    // Verify that the route is an instance of our extended Route class
+    expect($route)->toBeInstanceOf(Route::class);
+    expect($route->uri())->toBe('test');
+    expect($route->methods())->toContain('GET');
+});
+
+/**
+ * Test that the Router creates routes with proper configuration.
+ */
+test('router creates WordPress-compatible routes', function (): void {
+    $setup = setupRouterTest();
+    $router = $setup['router'];
+
+    // Create a WordPress route
+    $route = $router->get('/page', fn (): string => 'page');
+
+    // Set it as a WordPress route with condition
+    $route->setIsWordPressRoute(true);
+    $route->setCondition('is_page');
+
+    // Verify the route configuration
+    expect($route->isWordPressRoute())->toBeTrue();
+    expect($route->getCondition())->toBe('is_page');
+    expect($route->hasCondition())->toBeTrue();
+});
+
+/**
+ * Test that the Router can create new Route instances with newRoute method.
+ */
+test('router newRoute method creates proper Route instances', function (): void {
+    $setup = setupRouterTest();
+    $router = $setup['router'];
+
+    // Use the newRoute method
+    $route = $router->newRoute(['GET'], 'test', fn (): string => 'test');
+
+    // Verify that it returns our extended Route class
+    expect($route)->toBeInstanceOf(Route::class);
+    expect($route->uri())->toBe('test');
+    expect($route->methods())->toContain('GET');
+
+    // Verify that the route is properly configured
+    expect($route->getAction())->toHaveKey('uses');
+});

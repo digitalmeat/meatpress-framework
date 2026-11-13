@@ -1,0 +1,173 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Config\Repository;
+use Illuminate\Container\Container;
+use Meatpress\Application\Domain\Contracts\DebugDetectorInterface;
+use Meatpress\Discovery\Domain\Contracts\DiscoveryLocationInterface;
+use Meatpress\Discovery\Domain\Models\DiscoveryContext;
+use Meatpress\Discovery\Infrastructure\Adapters\LaravelDiscoveryCacheManagerFactory;
+use Meatpress\Discovery\Infrastructure\Services\DiscoveryCacheManager;
+use Meatpress\Discovery\Infrastructure\Services\ReflectionCache;
+use Psr\Log\LoggerInterface;
+use Spatie\StructureDiscoverer\Cache\StaticDiscoverCacheDriver;
+
+/**
+ * A location that costs seconds has to say so.
+ *
+ * Discovery walks a directory in full, and Symfony's Finder enumerates before
+ * it filters by extension, so a `node_modules/` under a location is paid for
+ * on every request that misses the cache — which, in debug mode, is every
+ * request. That cost was absorbed in silence for as long as it existed: the
+ * site was three seconds slower and no log line, no notice and no test said
+ * anything at all.
+ */
+function locationAt(string $path): DiscoveryLocationInterface
+{
+    $location = Mockery::mock(DiscoveryLocationInterface::class);
+    $location->shouldReceive('getPath')->andReturn($path);
+
+    return $location;
+}
+
+function managerFor(bool $debug, ?LoggerInterface $logger = null): DiscoveryCacheManager
+{
+    $container = new Container;
+
+    if ($logger instanceof LoggerInterface) {
+        $container->instance(LoggerInterface::class, $logger);
+    }
+
+    // Without a config repository the non-debug path cannot resolve a cache driver.
+    $container->instance('config', new Repository(['structure-discoverer' => ['cache' => []]]));
+    Container::setInstance($container);
+
+    $detector = Mockery::mock(DebugDetectorInterface::class);
+    $detector->shouldReceive('isDebugMode')->andReturn($debug);
+
+    return (new LaravelDiscoveryCacheManagerFactory($container, $detector))->make();
+}
+
+function scanOf(DiscoveryCacheManager $manager, string $path): void
+{
+    $manager->getStructuresForLocation(locationAt($path), new DiscoveryContext(new ReflectionCache));
+}
+
+beforeEach(function (): void {
+    // A real directory, because the manager really scans it.
+    $this->dir = sys_get_temp_dir().'/meatpress-scan-'.bin2hex(random_bytes(6));
+    mkdir($this->dir, 0o777, true);
+
+    $this->logger = Mockery::mock(LoggerInterface::class);
+});
+
+afterEach(function (): void {
+    array_map(unlink(...), glob($this->dir.'/*') ?: []);
+    rmdir($this->dir);
+    Container::setInstance();
+});
+
+describe('slow scan warning', function (): void {
+    it('says nothing about a location that scans quickly', function (): void {
+        // An empty directory is the fastest scan there is; if this warns, the
+        // threshold is wrong and every site gets a log line per request.
+        $this->logger->shouldNotReceive('warning');
+
+        // The first scan in a process loads the discoverer's classes: 150 to
+        // 225 ms measured on an idle machine, past the threshold under the
+        // load of `pest --parallel`. That is autoloading, not the scan this
+        // test is about, so it is paid on another directory first.
+        $warmUp = sys_get_temp_dir().'/meatpress-scan-'.bin2hex(random_bytes(6));
+        mkdir($warmUp);
+        scanOf(managerFor(true), $warmUp);
+        rmdir($warmUp);
+
+        scanOf(managerFor(true, $this->logger), $this->dir);
+    });
+
+    it('names the location, its cost and what it found', function (): void {
+        $captured = null;
+        $this->logger->shouldReceive('warning')->once()
+            ->andReturnUsing(function (string $message) use (&$captured): void {
+                $captured = $message;
+            });
+
+        $manager = managerFor(true, $this->logger);
+
+        // Drive the threshold rather than the clock: a scan slow enough to
+        // warn would mean creating tens of thousands of files in a test.
+        $reflection = new ReflectionMethod($manager, 'warnIfSlow');
+        $reflection->invoke($manager, locationAt('/srv/site/plugins/demo'), 1691.0, 3);
+
+        expect($captured)->toContain('/srv/site/plugins/demo')
+            ->toContain('1691ms')
+            ->toContain('3 structure(s)')
+            ->toContain('node_modules');
+    });
+
+    it('stays quiet below the threshold', function (): void {
+        $this->logger->shouldNotReceive('warning');
+
+        $manager = managerFor(true, $this->logger);
+        (new ReflectionMethod($manager, 'warnIfSlow'))
+            ->invoke($manager, locationAt('/srv/site/app'), 24.6, 10);
+    });
+
+    it('stays quiet outside debug mode', function (): void {
+        // With the cache on, the cost is paid once; a warning on every cold
+        // cache would be noise in a production log.
+        $this->logger->shouldNotReceive('warning');
+
+        $manager = managerFor(false, $this->logger);
+        (new ReflectionMethod($manager, 'warnIfSlow'))
+            ->invoke($manager, locationAt('/srv/site/plugins/demo'), 5000.0, 1);
+    });
+
+    it('does not turn a missing logger into a failure', function (): void {
+        $manager = managerFor(true);
+
+        (new ReflectionMethod($manager, 'warnIfSlow'))
+            ->invoke($manager, locationAt('/srv/site/plugins/demo'), 5000.0, 1);
+    })->throwsNoExceptions();
+});
+
+describe('scan sources', function (): void {
+    it("tells a real scan from this process's own copy", function (): void {
+        $manager = managerFor(debug: true, logger: Mockery::spy(LoggerInterface::class));
+
+        scanOf($manager, $this->dir);
+        scanOf($manager, $this->dir);
+
+        $scans = $manager->scans();
+
+        expect($scans)->toHaveCount(2)
+            ->and($scans[0]['path'])->toBe($this->dir)
+            ->and($scans[0]['source'])->toBe('disk')
+            ->and($scans[1]['source'])->toBe('memory')
+            ->and($scans[1]['milliseconds'])->toBe(0.0);
+    });
+
+    it('tells a warm persistent cache from a scan that filled it', function (): void {
+        $container = new Container;
+        $container->instance('config', new Repository(['structure-discoverer' => ['cache' => ['driver' => StaticDiscoverCacheDriver::class]]]));
+        $container->instance(StaticDiscoverCacheDriver::class, new StaticDiscoverCacheDriver);
+        Container::setInstance($container);
+
+        $detector = Mockery::mock(DebugDetectorInterface::class);
+        $detector->shouldReceive('isDebugMode')->andReturn(false);
+
+        $first = (new LaravelDiscoveryCacheManagerFactory($container, $detector))->make();
+        scanOf($first, $this->dir);
+
+        // A new process starts with an empty copy of its own, and only the
+        // persistent cache is left to answer.
+        (new ReflectionProperty(DiscoveryCacheManager::class, 'structuresCache'))->setValue(null, []);
+
+        $second = (new LaravelDiscoveryCacheManagerFactory($container, $detector))->make();
+        scanOf($second, $this->dir);
+
+        expect($first->scans()[0]['source'])->toBe('disk')
+            ->and($second->scans()[0]['source'])->toBe('cache');
+    });
+});

@@ -1,0 +1,11 @@
+import metadata from './block.json';
+
+/**
+ * The editor shows what the page shows: render.blade.php, rendered by the
+ * server for the block's current attributes. Where the template writes
+ * <InnerBlocks />, the inner blocks are edited in place.
+ *
+ * window.meatpress.blocks is the framework's editor runtime, loaded with every
+ * block that has a render template.
+ */
+export default window.meatpress.blocks.bladeEdit(metadata);

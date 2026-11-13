@@ -1,0 +1,28 @@
+<?php
+
+declare(strict_types=1);
+
+namespace DummyNamespace;
+
+use Meatpress\Attributes\PostType;
+use Meatpress\Attributes\PostType\PublicPostType;
+use Meatpress\Attributes\PostType\PubliclyQueryable;
+use Meatpress\Attributes\PostType\HasArchive;
+use Meatpress\Attributes\PostType\Supports;
+use Meatpress\Attributes\PostType\MenuIcon;
+
+/**
+ * DummyName post type.
+ *
+ * This class defines the DummyName custom post type using PHP attributes
+ * for WordPress registration.
+ */
+#[PostType]
+#[PublicPostType]
+#[PubliclyQueryable]
+#[HasArchive]
+#[Supports(['title', 'editor', 'thumbnail'])]
+#[MenuIcon('dashicons-admin-post')]
+class DummyClass
+{
+}

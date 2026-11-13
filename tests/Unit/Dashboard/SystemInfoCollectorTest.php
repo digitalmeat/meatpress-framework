@@ -1,0 +1,495 @@
+<?php
+
+declare(strict_types=1);
+
+use Meatpress\Attributes\PostType;
+use Meatpress\Attributes\Taxonomy;
+use Meatpress\Dashboard\Domain\Contracts\WordPressEnvironmentInterface;
+use Meatpress\Dashboard\Domain\Services\SystemInfoCollector;
+use Meatpress\Discovery\Application\Services\DiscoveryManager;
+use Meatpress\Discovery\Domain\Contracts\DiscoveryEngineInterface;
+use Meatpress\Discovery\Domain\Contracts\DiscoveryInterface;
+use Meatpress\Discovery\Domain\Contracts\DiscoveryLocationInterface;
+use Meatpress\Discovery\Domain\Models\DiscoveryItems;
+use Meatpress\VersionCheck\Domain\Contracts\VersionCheckerInterface;
+use Meatpress\VersionCheck\Domain\Services\VersionComparator;
+use Nwidart\Modules\Module;
+use Psr\Container\ContainerInterface;
+use Spatie\StructureDiscoverer\Cache\LaravelDiscoverCacheDriver;
+use Spatie\StructureDiscoverer\Cache\NullDiscoverCacheDriver;
+
+#[PostType('synthese-presse', singular: 'Synthèse de presse', plural: 'Synthèses de presse')]
+class SyntheseDePresse {}
+
+#[Taxonomy('theme-presse', singular: 'Thème de presse', plural: 'Thèmes de presse')]
+class ThemeDePresse {}
+
+function createCollector(
+    ?VersionComparator $comparator = null,
+    ?DiscoveryManager $manager = null,
+    ?ContainerInterface $container = null,
+    string $laravelVersion = '11.0.0',
+    ?WordPressEnvironmentInterface $wordpress = null,
+): SystemInfoCollector {
+    $comparator ??= new VersionComparator(
+        Mockery::mock(VersionCheckerInterface::class, [
+            'getCurrentVersion' => '13.4.0',
+            'getLatestVersion' => '13.4.0',
+        ])
+    );
+
+    $manager ??= Mockery::mock(DiscoveryManager::class);
+    $container ??= Mockery::mock(ContainerInterface::class);
+
+    if (! $wordpress instanceof WordPressEnvironmentInterface) {
+        return new SystemInfoCollector($comparator, $manager, $container, $laravelVersion);
+    }
+
+    return new SystemInfoCollector($comparator, $manager, $container, $laravelVersion, $wordpress);
+}
+
+describe('SystemInfoCollector', function (): void {
+
+    describe('collectFrameworkInfo', function (): void {
+        it('returns current and latest version', function (): void {
+            $collector = createCollector();
+            $info = $collector->collectFrameworkInfo();
+
+            expect($info)->toMatchArray([
+                'current' => '13.4.0',
+                'latest' => '13.4.0',
+                'update_available' => false,
+                'development' => false,
+            ]);
+        });
+
+        it('flags a development build', function (): void {
+            $checker = Mockery::mock(VersionCheckerInterface::class, [
+                'getCurrentVersion' => 'dev-develop',
+                'getLatestVersion' => '13.4.4',
+            ]);
+
+            $collector = createCollector(new VersionComparator($checker));
+            $info = $collector->collectFrameworkInfo();
+
+            expect($info['development'])->toBeTrue();
+            expect($info['update_available'])->toBeFalse();
+        });
+
+        it('detects update available', function (): void {
+            $checker = Mockery::mock(VersionCheckerInterface::class, [
+                'getCurrentVersion' => '13.3.0',
+                'getLatestVersion' => '13.4.0',
+            ]);
+
+            $collector = createCollector(new VersionComparator($checker));
+            $info = $collector->collectFrameworkInfo();
+
+            expect($info['update_available'])->toBeTrue();
+            expect($info['current'])->toBe('13.3.0');
+            expect($info['latest'])->toBe('13.4.0');
+        });
+
+        it('handles null versions', function (): void {
+            $checker = Mockery::mock(VersionCheckerInterface::class, [
+                'getCurrentVersion' => null,
+                'getLatestVersion' => null,
+            ]);
+
+            $collector = createCollector(new VersionComparator($checker));
+            $info = $collector->collectFrameworkInfo();
+
+            expect($info['current'])->toBeNull();
+            expect($info['latest'])->toBeNull();
+            expect($info['update_available'])->toBeFalse();
+        });
+    });
+
+    describe('collectEnvironmentInfo', function (): void {
+        it('returns PHP and Laravel versions', function (): void {
+            $collector = createCollector();
+            $info = $collector->collectEnvironmentInfo();
+
+            expect($info['php'])->toBe(PHP_VERSION);
+            expect($info['laravel'])->toBe('11.0.0');
+            expect($info)->toHaveKeys(['php', 'laravel', 'wordpress']);
+        });
+
+        it('reports Unknown for WordPress when it runs without WordPress', function (): void {
+            expect(createCollector()->collectEnvironmentInfo()['wordpress'])->toBe('Unknown');
+        });
+
+        it('reports the WordPress version the environment gives', function (): void {
+            $wordpress = Mockery::mock(WordPressEnvironmentInterface::class, ['version' => '6.8.1']);
+
+            expect(createCollector(wordpress: $wordpress)->collectEnvironmentInfo()['wordpress'])->toBe('6.8.1');
+        });
+    });
+
+    describe('collectWordPressConfig', function (): void {
+        it('returns WordPress config with defaults', function (): void {
+            $collector = createCollector();
+            $info = $collector->collectWordPressConfig();
+
+            expect($info)->toHaveKeys(['debug', 'multisite', 'permalink_structure']);
+            expect($info['debug'])->toBeBool();
+            expect($info['multisite'])->toBeBool();
+        });
+
+        it('reports the multisite flag and permalink structure the environment gives', function (): void {
+            $wordpress = Mockery::mock(WordPressEnvironmentInterface::class, [
+                'isMultisite' => true,
+                'permalinkStructure' => '/%postname%/',
+            ]);
+
+            expect(createCollector(wordpress: $wordpress)->collectWordPressConfig())->toMatchArray([
+                'multisite' => true,
+                'permalink_structure' => '/%postname%/',
+            ]);
+        });
+
+        it('calls an empty permalink structure Plain', function (): void {
+            expect(createCollector()->collectWordPressConfig()['permalink_structure'])->toBe('Plain');
+        });
+    });
+
+    describe('collectDiscoveryInfo', function (): void {
+        it('collects post type count and labels from discovery', function (): void {
+            $items = new DiscoveryItems;
+            $location = Mockery::mock(DiscoveryLocationInterface::class);
+            $location->shouldReceive('getKey')->andReturn('test');
+            $items->add($location, ['class' => 'App\\PostTypes\\Project']);
+            $items->add($location, ['class' => 'App\\PostTypes\\Service']);
+
+            $postTypeDiscovery = Mockery::mock(DiscoveryInterface::class);
+            $postTypeDiscovery->shouldReceive('getItems')->andReturn($items);
+
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getDiscoveredItems')
+                ->with('post_types')
+                ->andReturn($items->all());
+            $manager->shouldReceive('getDiscoveredItems')
+                ->withAnyArgs()
+                ->andReturn([]);
+
+            $collector = createCollector(manager: $manager);
+            $info = $collector->collectDiscoveryInfo();
+
+            expect($info['post_types']['count'])->toBe(2);
+            expect($info['post_types']['items'][0])->toHaveKeys(['class', 'slug', 'label']);
+            expect($info['post_types']['items'][0]['class'])->toBe('App\\PostTypes\\Project');
+            expect($info['post_types']['items'][0]['slug'])->toBe('project');
+        });
+
+        it('reports the slug and labels of the #[PostType] attribute, not the class name', function (): void {
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getDiscoveredItems')->with('post_types')->andReturn([['class' => SyntheseDePresse::class]]);
+            $manager->shouldReceive('getDiscoveredItems')->with('taxonomies')->andReturn([['class' => ThemeDePresse::class]]);
+            $manager->shouldReceive('getDiscoveredItems')->withAnyArgs()->andReturn([]);
+
+            $info = createCollector(manager: $manager)->collectDiscoveryInfo();
+
+            expect($info['post_types']['items'][0])->toMatchArray(['slug' => 'synthese-presse', 'label' => 'Synthèses de presse'])
+                ->and($info['taxonomies']['items'][0])->toMatchArray(['slug' => 'theme-presse', 'label' => 'Thèmes de presse']);
+        });
+
+        it('prefers the label WordPress registered over the attribute', function (): void {
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getDiscoveredItems')->with('post_types')->andReturn([['class' => SyntheseDePresse::class]]);
+            $manager->shouldReceive('getDiscoveredItems')->with('taxonomies')->andReturn([['class' => ThemeDePresse::class]]);
+            $manager->shouldReceive('getDiscoveredItems')->withAnyArgs()->andReturn([]);
+
+            $wordpress = Mockery::mock(WordPressEnvironmentInterface::class);
+            $wordpress->shouldReceive('postTypeLabel')->with('synthese-presse')->andReturn('Revues de presse');
+            $wordpress->shouldReceive('taxonomyLabel')->with('theme-presse')->andReturn('Rubriques');
+
+            $info = createCollector(manager: $manager, wordpress: $wordpress)->collectDiscoveryInfo();
+
+            expect($info['post_types']['items'][0]['label'])->toBe('Revues de presse')
+                ->and($info['taxonomies']['items'][0]['label'])->toBe('Rubriques');
+        });
+
+        it('collects hook counts by type', function (): void {
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getDiscoveredItems')
+                ->with('hooks')
+                ->andReturn([
+                    ['type' => 'action', 'class' => 'Hooks\\MyHook', 'method' => 'onInit'],
+                    ['type' => 'action', 'class' => 'Hooks\\MyHook', 'method' => 'onSave'],
+                    ['type' => 'filter', 'class' => 'Hooks\\MyFilter', 'method' => 'filterTitle'],
+                ]);
+            $manager->shouldReceive('getDiscoveredItems')
+                ->withAnyArgs()
+                ->andReturn([]);
+
+            $collector = createCollector(manager: $manager);
+            $info = $collector->collectDiscoveryInfo();
+
+            expect($info['hooks']['count'])->toBe(3);
+            expect($info['hooks']['actions'])->toBe(2);
+            expect($info['hooks']['filters'])->toBe(1);
+        });
+
+        it('collects schedules with class and method', function (): void {
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getDiscoveredItems')
+                ->with('schedules')
+                ->andReturn([
+                    ['class' => 'App\\Schedule\\Cleanup', 'method' => 'run'],
+                ]);
+            $manager->shouldReceive('getDiscoveredItems')
+                ->withAnyArgs()
+                ->andReturn([]);
+
+            $collector = createCollector(manager: $manager);
+            $info = $collector->collectDiscoveryInfo();
+
+            expect($info['schedules']['count'])->toBe(1);
+            expect($info['schedules']['items'][0]['method'])->toBe('run');
+        });
+
+        it('collects all discovery types', function (): void {
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getDiscoveredItems')->andReturn([]);
+
+            $collector = createCollector(manager: $manager);
+            $info = $collector->collectDiscoveryInfo();
+
+            expect($info)->toHaveKeys([
+                'post_types', 'taxonomies', 'hooks',
+                'rest_routes', 'wp_cli_commands', 'schedules', 'service_providers',
+            ]);
+        });
+
+        it('handles missing discovery gracefully', function (): void {
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getDiscoveredItems')->andThrow(new RuntimeException('Not found'));
+
+            $collector = createCollector(manager: $manager);
+            $info = $collector->collectDiscoveryInfo();
+
+            expect($info['post_types']['count'])->toBe(0);
+            expect($info['taxonomies']['count'])->toBe(0);
+            expect($info['hooks']['count'])->toBe(0);
+            expect($info['rest_routes']['count'])->toBe(0);
+            expect($info['wp_cli_commands']['count'])->toBe(0);
+            expect($info['schedules']['count'])->toBe(0);
+            expect($info['service_providers']['count'])->toBe(0);
+        });
+    });
+
+    describe('collectPerformanceInfo', function (): void {
+        it('delegates to discovery manager', function (): void {
+            $stats = ['context' => ['cache_hits' => 5, 'cache_misses' => 2]];
+
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getPerformanceStats')->andReturn($stats);
+
+            $collector = createCollector(manager: $manager);
+            $info = $collector->collectPerformanceInfo();
+
+            expect($info)->toBe($stats);
+        });
+    });
+
+    describe('collectCacheInfo', function (): void {
+        it('reports cache as disabled with NullDriver', function (): void {
+            $engine = Mockery::mock(DiscoveryEngineInterface::class);
+            $engine->shouldReceive('getCacheDriver')
+                ->andReturn(new NullDiscoverCacheDriver);
+
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getEngine')->andReturn($engine);
+
+            $collector = createCollector(manager: $manager);
+            $info = $collector->collectCacheInfo();
+
+            expect($info['enabled'])->toBeFalse();
+            expect($info['driver'])->toBe('NullDiscoverCacheDriver');
+        });
+
+        it('reports cache as enabled with Laravel driver', function (): void {
+            $driver = Mockery::mock(LaravelDiscoverCacheDriver::class);
+
+            $engine = Mockery::mock(DiscoveryEngineInterface::class);
+            $engine->shouldReceive('getCacheDriver')->andReturn($driver);
+
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getEngine')->andReturn($engine);
+
+            $collector = createCollector(manager: $manager);
+            $info = $collector->collectCacheInfo();
+
+            expect($info['enabled'])->toBeTrue();
+        });
+
+        it('falls back gracefully on error', function (): void {
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getEngine')
+                ->andThrow(new RuntimeException('No engine'));
+
+            $collector = createCollector(manager: $manager);
+            $info = $collector->collectCacheInfo();
+
+            expect($info['driver'])->toBe('Unknown');
+            expect($info['enabled'])->toBeFalse();
+        });
+    });
+
+    describe('collectModulesInfo', function (): void {
+        it('falls back when modules not available', function (): void {
+            $container = Mockery::mock(ContainerInterface::class);
+            $container->shouldReceive('get')
+                ->with('modules')
+                ->andThrow(new RuntimeException('Not bound'));
+
+            $collector = createCollector(container: $container);
+            $info = $collector->collectModulesInfo();
+
+            expect($info['count'])->toBe(0);
+            expect($info['enabled'])->toBe(0);
+            expect($info['disabled'])->toBe(0);
+        });
+
+        it('lists a module whose module.json has no priority, with its state', function (): void {
+            // nwidart's getPriority() is typed string and threw: the card said "0 modules"
+            $module = Mockery::mock(Module::class);
+            $module->shouldReceive('getName')->andReturn('BlocksDemo');
+            $module->shouldReceive('getDescription')->andReturn('Demo');
+            $module->shouldReceive('get')->with('priority', '')->andReturn(null);
+            $module->shouldReceive('isEnabled')->andReturn(true);
+
+            $modules = Mockery::mock();
+            $modules->shouldReceive('all')->andReturn(['BlocksDemo' => $module]);
+            // nwidart keys enabled modules by lower-case name
+            $modules->shouldReceive('allEnabled')->andReturn(['blocksdemo' => $module]);
+            $modules->shouldReceive('allDisabled')->andReturn([]);
+
+            $container = Mockery::mock(ContainerInterface::class);
+            $container->shouldReceive('get')->with('modules')->andReturn($modules);
+            $container->shouldReceive('get')->andThrow(new RuntimeException('Not bound'));
+
+            $info = createCollector(container: $container)->collectModulesInfo();
+
+            expect($info['count'])->toBe(1)
+                ->and($info['items'][0])->toMatchArray(['name' => 'BlocksDemo', 'status' => 'enabled', 'priority' => ''])
+                ->and($info['connector'])->toBeNull();
+        });
+    });
+
+    describe('collectThemeInfo', function (): void {
+        it('returns Unknown when wp_get_theme is not available', function (): void {
+            $collector = createCollector();
+            $info = $collector->collectThemeInfo();
+
+            expect($info)->toMatchArray([
+                'name' => 'Unknown',
+                'version' => 'Unknown',
+                'template' => 'Unknown',
+            ]);
+        });
+
+        it('returns the active theme the environment gives', function (): void {
+            $theme = ['name' => 'Apiary', 'version' => '1.2.0', 'template' => 'apiary'];
+            $wordpress = Mockery::mock(WordPressEnvironmentInterface::class, ['activeTheme' => $theme]);
+
+            expect(createCollector(wordpress: $wordpress)->collectThemeInfo())->toBe($theme);
+        });
+    });
+
+    describe('collectTranslationInfo', function (): void {
+        // laravel/framework declares __() behind the same function_exists()
+        // guard as digitalmeat/meatpress-helpers, and Pest loads the autoloader from
+        // its own binary, so Laravel's __() is the one installed here. That is
+        // precisely the misconfiguration this check exists to catch, so the
+        // suite runs against the failing side and proves the detection
+        // discriminates instead of always answering yes.
+        it('reports the override as inactive when __() is not the package helper', function (): void {
+            $info = createCollector()->collectTranslationInfo();
+
+            expect($info['override_active'])->toBeFalse()
+                ->and($info['helper_file'])->toEndWith('helpers.php');
+        });
+
+        it('names the file __() actually resolves from', function (): void {
+            $info = createCollector()->collectTranslationInfo();
+
+            expect($info['helper_file'])
+                ->toBe((new ReflectionFunction('__'))->getFileName());
+        });
+
+        it('reports the WordPress locale', function (): void {
+            $wordpress = Mockery::mock(WordPressEnvironmentInterface::class, ['locale' => 'fr_FR']);
+
+            expect(createCollector(wordpress: $wordpress)->collectTranslationInfo()['wordpress_locale'])->toBe('fr_FR');
+        });
+
+        it('reports an Unknown WordPress locale when there is none', function (?string $locale): void {
+            $wordpress = Mockery::mock(WordPressEnvironmentInterface::class, ['locale' => $locale]);
+
+            expect(createCollector(wordpress: $wordpress)->collectTranslationInfo()['wordpress_locale'])->toBe('Unknown');
+        })->with([
+            'not loaded' => [null],
+            'empty' => [''],
+        ]);
+
+        it('reports the locale the bound translator declares', function (): void {
+            $container = Mockery::mock(ContainerInterface::class);
+            $container->shouldReceive('get')->with('translator')->andReturn(
+                new class
+                {
+                    public function getLocale(): string
+                    {
+                        return 'de';
+                    }
+                }
+            );
+
+            expect(createCollector(container: $container)->collectTranslationInfo()['laravel_locale'])
+                ->toBe('de');
+        });
+
+        it('falls back to Unknown when no translator is bound', function (): void {
+            $container = Mockery::mock(ContainerInterface::class);
+            $container->shouldReceive('get')->with('translator')
+                ->andThrow(new RuntimeException('Not bound'));
+
+            expect(createCollector(container: $container)->collectTranslationInfo()['laravel_locale'])
+                ->toBe('Unknown');
+        });
+
+        it('falls back to Unknown when the binding cannot report a locale', function (): void {
+            $container = Mockery::mock(ContainerInterface::class);
+            $container->shouldReceive('get')->with('translator')->andReturn(new stdClass);
+
+            expect(createCollector(container: $container)->collectTranslationInfo()['laravel_locale'])
+                ->toBe('Unknown');
+        });
+    });
+
+    describe('collect', function (): void {
+        it('returns all sections', function (): void {
+            $engine = Mockery::mock(DiscoveryEngineInterface::class);
+            $engine->shouldReceive('getCacheDriver')->andReturn(null);
+
+            $manager = Mockery::mock(DiscoveryManager::class);
+            $manager->shouldReceive('getDiscoveredItems')->andReturn([]);
+            $manager->shouldReceive('getEngine')->andReturn($engine);
+            $manager->shouldReceive('getPerformanceStats')->andReturn([]);
+
+            $container = Mockery::mock(ContainerInterface::class);
+            $container->shouldReceive('get')
+                ->with('modules')
+                ->andThrow(new RuntimeException('Not bound'));
+
+            $collector = createCollector(manager: $manager, container: $container);
+            $info = $collector->collect();
+
+            expect($info)->toHaveKeys([
+                'framework', 'environment', 'wordpress',
+                'discovery', 'performance', 'cache', 'modules', 'theme',
+                'translations',
+            ]);
+        });
+    });
+});

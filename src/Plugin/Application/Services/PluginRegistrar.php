@@ -1,0 +1,461 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Plugin\Application\Services;
+
+use Illuminate\Contracts\Container\Container as ContainerContract;
+use Illuminate\Foundation\Application;
+use Meatpress\Modules\Domain\Contracts\ModuleDiscoveryOrchestratorInterface;
+use Meatpress\Modules\Domain\Contracts\ModuleRepositoryInterface;
+use Meatpress\Modules\Infrastructure\Services\ModuleAssetManager;
+use Meatpress\Modules\Infrastructure\Services\ModuleConfigurationLoader;
+use Meatpress\Modules\Infrastructure\Services\ModuleRouteLoader;
+use Meatpress\Plugin\Domain\Contracts\PluginModuleInterface;
+use Meatpress\Plugin\Infrastructure\Models\LaravelPluginModule;
+use Meatpress\Plugin\Infrastructure\Repositories\PluginRepository;
+use Meatpress\Plugin\Infrastructure\Services\WordPressPluginParser;
+use Psr\Log\LoggerInterface;
+
+/**
+ * Plugin registration service.
+ *
+ * Handles the registration and initialization of WordPress plugins within
+ * the Meatpress framework. Manages plugin discovery, service provider registration,
+ * and integration with the Laravel application container.
+ */
+class PluginRegistrar
+{
+    /**
+     * Directories of a plugin root that never hold discoverable classes.
+     *
+     * Dependencies, build output, views and assets, translations, and hidden
+     * directories (`.git`, `.github`). Walking them costs the request and
+     * finds nothing that belongs to the plugin.
+     */
+    private const array NON_DISCOVERABLE_DIRECTORIES = [
+        'node_modules',
+        'vendor',
+        'bower_components',
+        'build',
+        'dist',
+        'public',
+        'resources',
+        'assets',
+        'languages',
+        'lang',
+    ];
+
+    /**
+     * Collection of registered plugins.
+     *
+     * @var array<string, PluginModuleInterface>
+     */
+    private array $registeredPlugins = [];
+
+    /**
+     * Create a new PluginRegistrar instance.
+     *
+     * @param  ContainerContract  $app  Application container
+     * @param  WordPressPluginParser  $pluginParser  Plugin parser service
+     */
+    public function __construct(
+        protected ContainerContract $app,
+        protected WordPressPluginParser $pluginParser
+    ) {}
+
+    /**
+     * Register a plugin by name and path.
+     *
+     * @param  string  $pluginName  Plugin name
+     * @param  string  $pluginPath  Plugin path
+     * @return PluginModuleInterface Registered plugin module
+     */
+    public function register(string $pluginName, string $pluginPath): PluginModuleInterface
+    {
+        // Parse plugin headers from main plugin file
+        $mainFilePath = rtrim($pluginPath, '/').'/'.$pluginName.'.php';
+        $pluginData = $this->pluginParser->parsePluginHeaders($mainFilePath);
+
+        // Create the plugin module
+        $plugin = $this->createPluginModule($pluginName, $pluginPath);
+        $plugin->registerAutoloading();
+        $plugin->setHeaders($pluginData);
+        $plugin->setEnabled(true);
+
+        // Store as registered plugin
+        $this->registeredPlugins[$pluginName] = $plugin;
+
+        // Invalidate repository cache and discover structures
+        $this->invalidateRepositoryCache();
+        $this->discoverPluginStructures($plugin);
+
+        // Load plugin configuration
+        $this->loadPluginConfiguration($plugin);
+
+        // Setup plugin components
+        $this->setupPluginComponents($plugin);
+
+        // Setup plugin assets and includes
+        $this->setupPluginAssets($plugin);
+
+        // Load plugin routes (api.php, web.php)
+        $this->loadPluginRoutes($plugin);
+
+        // Register and boot the plugin
+        $plugin->register();
+        $plugin->boot();
+
+        return $plugin;
+    }
+
+    /**
+     * Register multiple plugins from an array.
+     *
+     * @param  array  $plugins  Array of plugin names and paths
+     * @return array<string, PluginModuleInterface> Registered plugin modules
+     */
+    public function registerMultiple(array $plugins): array
+    {
+        $registeredPlugins = [];
+
+        foreach ($plugins as $pluginName => $pluginPath) {
+            $registeredPlugins[$pluginName] = $this->register($pluginName, $pluginPath);
+        }
+
+        return $registeredPlugins;
+    }
+
+    /**
+     * Register plugins from WordPress active plugins list.
+     *
+     * @return array<string, PluginModuleInterface> Registered plugin modules
+     */
+    public function registerActivePlugins(): array
+    {
+        if (! function_exists('get_option')) {
+            return [];
+        }
+
+        $activePlugins = get_option('active_plugins', []);
+        $registeredPlugins = [];
+
+        foreach ($activePlugins as $pluginBasename) {
+            $pluginName = dirname((string) $pluginBasename);
+            $pluginPath = WP_PLUGIN_DIR.'/'.$pluginName;
+
+            if (is_dir($pluginPath) && $pluginName !== '.') {
+                $registeredPlugins[$pluginName] = $this->register($pluginName, $pluginPath);
+            }
+        }
+
+        return $registeredPlugins;
+    }
+
+    /**
+     * Get a registered plugin by name.
+     *
+     * @param  string  $pluginName  Plugin name
+     * @return PluginModuleInterface|null Plugin module or null if not found
+     */
+    public function getRegisteredPlugin(string $pluginName): ?PluginModuleInterface
+    {
+        return $this->registeredPlugins[$pluginName] ?? null;
+    }
+
+    /**
+     * Get all registered plugins.
+     *
+     * @return array<string, PluginModuleInterface> All registered plugin modules
+     */
+    public function getRegisteredPlugins(): array
+    {
+        return $this->registeredPlugins;
+    }
+
+    /**
+     * Check if a plugin is registered.
+     *
+     * @param  string  $pluginName  Plugin name
+     * @return bool True if plugin is registered
+     */
+    public function isPluginRegistered(string $pluginName): bool
+    {
+        return isset($this->registeredPlugins[$pluginName]);
+    }
+
+    /**
+     * Unregister a plugin.
+     *
+     * @param  string  $pluginName  Plugin name
+     * @return bool True if plugin was unregistered, false if not found
+     */
+    public function unregister(string $pluginName): bool
+    {
+        if (! isset($this->registeredPlugins[$pluginName])) {
+            return false;
+        }
+
+        $plugin = $this->registeredPlugins[$pluginName];
+        $plugin->disable();
+
+        unset($this->registeredPlugins[$pluginName]);
+
+        return true;
+    }
+
+    /**
+     * Reset all registered plugins.
+     */
+    public function resetRegisteredPlugins(): void
+    {
+        foreach ($this->registeredPlugins as $plugin) {
+            $plugin->disable();
+        }
+
+        $this->registeredPlugins = [];
+        $this->invalidateRepositoryCache();
+    }
+
+    /**
+     * Create plugin module instance.
+     *
+     * @param  string  $pluginName  Plugin name
+     * @param  string  $pluginPath  Plugin path
+     * @return LaravelPluginModule Plugin module instance
+     */
+    protected function createPluginModule(string $pluginName, string $pluginPath): LaravelPluginModule
+    {
+        /** @var Application $app */
+        $app = $this->app->has('app') ? $this->app->get('app') : $this->app;
+
+        return new LaravelPluginModule($pluginName, $pluginPath, $app);
+    }
+
+    /**
+     * Invalidate the plugin repository cache.
+     */
+    protected function invalidateRepositoryCache(): void
+    {
+        if (! $this->app->has(ModuleRepositoryInterface::class)) {
+            return;
+        }
+
+        try {
+            $repository = $this->app->get(ModuleRepositoryInterface::class);
+
+            if ($repository instanceof PluginRepository) {
+                $repository->resetCache();
+            }
+        } catch (\Exception $exception) {
+            $this->logError('Failed to invalidate plugin repository cache: '.$exception->getMessage());
+        }
+    }
+
+    /**
+     * Perform on-demand discovery for plugin structures.
+     *
+     * @param  PluginModuleInterface  $plugin  Plugin module
+     */
+    protected function discoverPluginStructures(PluginModuleInterface $plugin): void
+    {
+        if (! $this->app->has(ModuleDiscoveryOrchestratorInterface::class)) {
+            return;
+        }
+
+        try {
+            $discoveryService = $this->app->get(ModuleDiscoveryOrchestratorInterface::class);
+
+            foreach ($this->getPluginDiscoveryPaths($plugin) as $path) {
+                $discoveryService->discover($path);
+            }
+        } catch (\Exception $exception) {
+            $this->logError(sprintf('Plugin discovery error for %s: ', $plugin->getName()).$exception->getMessage());
+        }
+    }
+
+    /**
+     * Where a plugin's discoverable classes live.
+     *
+     * Themes and modules have always been scanned at `app/`, falling back to
+     * `src/` — the same two directories the dynamic autoloader maps
+     * `Plugin\{Name}\` onto. Plugins were scanned at their root instead, and
+     * a plugin root is where `node_modules/` lives once the plugin has a Vite
+     * build.
+     *
+     * Measured on a demo plugin with a block build: 69,741 files under
+     * `node_modules/`, walked on every request, to reach the three PHP files
+     * the plugin actually owns. Symfony's Finder enumerates before it filters,
+     * so the extension check costs nothing and the walk costs everything:
+     * 1,691 ms against 1 ms for the same directory with `node_modules` left
+     * out. It also found ten PHP files shipped inside `@wordpress/style-engine`
+     * and handed them to discovery, which is its own kind of wrong.
+     *
+     * A plugin with neither directory — one that only ships blocks, which
+     * need no class at all — is scanned in its other top-level directories,
+     * never in the ones listed in {@see NON_DISCOVERABLE_DIRECTORIES}. Its
+     * root was scanned whole before: 2 to 7 seconds per request, measured on
+     * a blocks-only plugin with a Vite build.
+     *
+     * @return list<string>
+     */
+    protected function getPluginDiscoveryPaths(PluginModuleInterface $plugin): array
+    {
+        $basePath = rtrim($plugin->getPath(), '/');
+
+        foreach (['/app', '/src'] as $directory) {
+            if (is_dir($basePath.$directory)) {
+                return [$basePath.$directory];
+            }
+        }
+
+        $paths = [];
+
+        foreach (scandir($basePath) ?: [] as $entry) {
+            if (str_starts_with($entry, '.') || in_array($entry, self::NON_DISCOVERABLE_DIRECTORIES, true)) {
+                continue;
+            }
+
+            if (is_dir($basePath.'/'.$entry)) {
+                $paths[] = $basePath.'/'.$entry;
+            }
+        }
+
+        return $paths;
+    }
+
+    /**
+     * Load plugin-specific configuration.
+     *
+     * @param  PluginModuleInterface  $plugin  Plugin module
+     */
+    protected function loadPluginConfiguration(PluginModuleInterface $plugin): void
+    {
+        if (! $this->app->has(ModuleConfigurationLoader::class)) {
+            return;
+        }
+
+        try {
+            /** @var ModuleConfigurationLoader $configLoader */
+            $configLoader = $this->app->get(ModuleConfigurationLoader::class);
+
+            $configLoader->loadModuleConfiguration(
+                $plugin->getPath(),
+                'plugin'
+            );
+        } catch (\Exception $exception) {
+            $this->logError('Failed to load plugin configuration: '.$exception->getMessage());
+        }
+    }
+
+    /**
+     * Setup plugin-specific components.
+     *
+     * @param  PluginModuleInterface  $plugin  Plugin module
+     */
+    protected function setupPluginComponents(PluginModuleInterface $plugin): void {}
+
+    /**
+     * Load plugin routes (api.php, web.php).
+     *
+     * @param  PluginModuleInterface  $plugin  Plugin module
+     */
+    protected function loadPluginRoutes(PluginModuleInterface $plugin): void
+    {
+        if (! $this->app->has(ModuleRouteLoader::class)) {
+            return;
+        }
+
+        try {
+            /** @var ModuleRouteLoader $routeLoader */
+            $routeLoader = $this->app->get(ModuleRouteLoader::class);
+            $routeLoader->loadModuleRoutes($plugin);
+        } catch (\Exception $exception) {
+            $this->logError('Failed to load plugin routes: '.$exception->getMessage());
+        }
+    }
+
+    /**
+     * Setup plugin assets and includes.
+     *
+     * @param  PluginModuleInterface  $plugin  Plugin module
+     */
+    protected function setupPluginAssets(PluginModuleInterface $plugin): void
+    {
+        if (! $this->app->has(ModuleAssetManager::class)) {
+            return;
+        }
+
+        try {
+            /** @var ModuleAssetManager $assetManager */
+            $assetManager = $this->app->get(ModuleAssetManager::class);
+
+            // Setup asset management (plugin uses 'plugin' as container name)
+            $assetManager->setupModuleAssets(
+                $plugin->getLowerName(),
+                $plugin->getPath(),
+                'plugin'
+            );
+
+            // Load plugin includes
+            $assetManager->loadModuleIncludes($plugin->getPath());
+
+            // Register Blade directives if plugin has views
+            if (method_exists($plugin, 'hasViews') && $plugin->hasViews()) {
+                $assetManager->registerModuleBladeDirectives($plugin->getPath());
+            }
+        } catch (\Exception $exception) {
+            $this->logError('Failed to setup plugin assets: '.$exception->getMessage());
+        }
+    }
+
+    /**
+     * Get count of registered plugins.
+     *
+     * @return int Number of registered plugins
+     */
+    public function getRegisteredPluginCount(): int
+    {
+        return count($this->registeredPlugins);
+    }
+
+    /**
+     * Get registered plugins by status.
+     *
+     * @param  string  $status  Plugin status (active, inactive, enabled, disabled)
+     * @return array<string, PluginModuleInterface> Filtered plugin modules
+     */
+    public function getRegisteredPluginsByStatus(string $status): array
+    {
+        return array_filter($this->registeredPlugins, fn (PluginModuleInterface $plugin): bool => match ($status) {
+            'active' => $plugin->isActive(),
+            'inactive' => ! $plugin->isActive(),
+            'enabled' => $plugin->isEnabled(),
+            'disabled' => $plugin->isDisabled(),
+            default => true,
+        });
+    }
+
+    /**
+     * Check if debug mode is enabled.
+     *
+     * @return bool True if debug mode is enabled
+     */
+    protected function isDebugMode(): bool
+    {
+        return defined('WP_DEBUG') && WP_DEBUG;
+    }
+
+    /**
+     * Log error message.
+     *
+     * @param  string  $message  Error message
+     */
+    protected function logError(string $message): void
+    {
+        try {
+            $this->app->get(LoggerInterface::class)->error($message);
+        } catch (\Throwable) {
+        }
+    }
+}

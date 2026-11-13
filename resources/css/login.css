@@ -1,0 +1,316 @@
+/*
+ * The login screen, dressed in the theme's own design tokens.
+ *
+ * Every value here comes from a custom property that Meatpress resolves from
+ * theme.json — see Meatpress\Login\Domain\Models\LoginPalette. Nothing is
+ * hard-coded that a theme could have an opinion about, so restyling a theme
+ * restyles its login screen without touching this file.
+ *
+ * Scoped to `.meatpress-login`, a class added on `login_body_class` only when
+ * the theme ships a config/login.php. Without it WordPress's own screen is
+ * left exactly as it was. The class also buys the specificity needed to beat
+ * wp-admin/css/login.css, which is loaded after anything login_head prints.
+ */
+
+body.login.meatpress-login {
+	background: var(--meatpress-login-background);
+	color: var(--meatpress-login-foreground);
+	font-family: var(--meatpress-login-font);
+}
+
+/* A wash of the brand, behind everything, at a weight that never competes
+   with the form. Fixed so short screens do not scroll it away. */
+body.login.meatpress-login::before {
+	content: "";
+	position: fixed;
+	inset: 0;
+	z-index: -1;
+	pointer-events: none;
+	background:
+		radial-gradient(60rem 40rem at 15% -10%, color-mix(in srgb, var(--meatpress-login-primary) 12%, transparent), transparent 70%),
+		radial-gradient(50rem 35rem at 100% 0%, color-mix(in srgb, var(--meatpress-login-accent) 10%, transparent), transparent 70%);
+}
+
+.meatpress-login #login {
+	width: 100%;
+	max-width: 25rem;
+	box-sizing: border-box;
+	padding: clamp(2rem, 8vh, 5rem) 1rem 2rem;
+}
+
+/* ---- Logo ------------------------------------------------------------- */
+
+/* Kept only when the theme names a logo: `background-image: var(…)` with the
+   variable undefined is invalid at computed-value time, which would erase
+   WordPress's logo instead of replacing it. The builder drops everything
+   between these two markers when there is nothing to draw. */
+/* meatpress:logo-start */
+.meatpress-login h1 a {
+	background-image: var(--meatpress-login-logo);
+	background-size: contain;
+	background-position: center center;
+	width: var(--meatpress-login-logo-width);
+	height: var(--meatpress-login-logo-height);
+	max-width: 100%;
+	margin-bottom: 1.75rem;
+}
+/* meatpress:logo-end */
+
+/* ---- The card --------------------------------------------------------- */
+
+.meatpress-login form {
+	background: var(--meatpress-login-surface);
+	border: 1px solid var(--meatpress-login-outline);
+	border-radius: var(--meatpress-login-radius);
+	box-shadow:
+		0 1px 2px color-mix(in srgb, var(--meatpress-login-foreground) 6%, transparent),
+		0 12px 32px -12px color-mix(in srgb, var(--meatpress-login-foreground) 18%, transparent);
+	padding: 1.75rem 1.5rem;
+	margin: 0 0 1rem;
+	/* WordPress contains the floated submit button with overflow:hidden, which
+	   also clips the focus ring of the input above it. flow-root contains the
+	   float without clipping anything. */
+	overflow: visible;
+	display: flow-root;
+}
+
+/* The language switcher is a form too, but not a card: WordPress's
+   #language-switcher rule already strips the surface above, and this gives
+   back the inline-block its own sheet sets. As a block the form spanned the
+   page, and its left-aligned label ("Language" and its icon) sat at the
+   window's edge, far from the dropdown. */
+.meatpress-login .language-switcher form {
+	display: inline-block;
+}
+
+.meatpress-login form label {
+	color: var(--meatpress-login-foreground);
+	font-size: .875rem;
+	font-weight: 500;
+}
+
+.meatpress-login form .input,
+.meatpress-login input[type="text"],
+.meatpress-login input[type="password"],
+.meatpress-login input[type="email"] {
+	font-size: 1rem;
+	line-height: 1.5;
+	min-height: 2.75rem;
+	padding: .5rem .75rem;
+	margin: .375rem 0 1rem;
+	color: var(--meatpress-login-foreground);
+	background: var(--meatpress-login-surface-alt);
+	border: 1px solid var(--meatpress-login-outline);
+	border-radius: var(--meatpress-login-radius-sm);
+	box-shadow: none;
+	transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.meatpress-login form .input:focus,
+.meatpress-login input[type="text"]:focus,
+.meatpress-login input[type="password"]:focus,
+.meatpress-login input[type="email"]:focus {
+	border-color: var(--meatpress-login-primary);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--meatpress-login-primary) 22%, transparent);
+	outline: 2px solid transparent; /* kept for forced-colors modes */
+}
+
+.meatpress-login .wp-pwd .button.wp-hide-pw {
+	color: var(--meatpress-login-muted);
+	top: .375rem;
+	right: 0;
+}
+
+.meatpress-login .wp-pwd .button.wp-hide-pw:hover,
+.meatpress-login .wp-pwd .button.wp-hide-pw:focus {
+	color: var(--meatpress-login-primary);
+	box-shadow: none;
+	border-color: transparent;
+	background: transparent;
+}
+
+.meatpress-login form .forgetmenot label {
+	color: var(--meatpress-login-muted);
+	font-weight: 400;
+}
+
+/* ---- Submit ----------------------------------------------------------- */
+
+/* Shaded from the theme's primary into its own hover shade, never into the
+   accent: an accent is a different role, and on a palette whose accent is not
+   of the primary's family the sweep goes muddy — measured on apiary, slate
+   #1f2937 into amber #fbbf24. Two shades of one role read as one button on
+   every palette, and on theme-default they are Meatpress's coral and pink. */
+.meatpress-login.wp-core-ui .button-primary,
+.meatpress-login .button-primary {
+	background: linear-gradient(135deg, var(--meatpress-login-primary), var(--meatpress-login-primary-hover));
+	border: 0;
+	border-radius: var(--meatpress-login-radius-sm);
+	color: #fff;
+	text-shadow: none;
+	box-shadow: 0 1px 2px color-mix(in srgb, var(--meatpress-login-primary) 40%, transparent);
+	font-weight: 600;
+	min-height: 2.5rem;
+	padding: 0 1.25rem;
+	transition: filter .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+
+.meatpress-login.wp-core-ui .button-primary:hover,
+.meatpress-login .button-primary:hover {
+	filter: saturate(1.1) brightness(1.03);
+	box-shadow: 0 4px 12px -2px color-mix(in srgb, var(--meatpress-login-primary) 45%, transparent);
+	transform: translateY(-1px);
+}
+
+.meatpress-login.wp-core-ui .button-primary:focus,
+.meatpress-login .button-primary:focus {
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--meatpress-login-primary) 35%, transparent);
+	transform: none;
+}
+
+.meatpress-login.wp-core-ui .button-primary:active,
+.meatpress-login .button-primary:active {
+	transform: none;
+	filter: brightness(.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.meatpress-login.wp-core-ui .button-primary,
+	.meatpress-login .button-primary {
+		transition: none;
+	}
+
+	.meatpress-login.wp-core-ui .button-primary:hover,
+	.meatpress-login .button-primary:hover {
+		transform: none;
+	}
+}
+
+/* ---- Secondary buttons ------------------------------------------------ */
+
+/* Not `.button-secondary`: the language switcher's submit carries only
+   `.button`, and left alone it kept wp-admin's blue next to a palette that
+   has none. The password-reveal toggle is a `.button` too, and is styled
+   above as the icon it is, so it stays out of this. */
+.meatpress-login.wp-core-ui .button:not(.button-primary):not(.wp-hide-pw) {
+	color: var(--meatpress-login-primary);
+	border-color: var(--meatpress-login-outline);
+	background: var(--meatpress-login-surface);
+	border-radius: var(--meatpress-login-radius-sm);
+	min-height: 2.25rem;
+}
+
+.meatpress-login.wp-core-ui .button:not(.button-primary):not(.wp-hide-pw):hover {
+	color: var(--meatpress-login-primary-hover);
+	border-color: var(--meatpress-login-primary);
+	background: var(--meatpress-login-surface);
+}
+
+/* ---- Links around the card -------------------------------------------- */
+
+.meatpress-login #nav,
+.meatpress-login #backtoblog {
+	padding: 0 .25rem;
+	font-size: .8125rem;
+}
+
+.meatpress-login #nav a,
+.meatpress-login #backtoblog a {
+	color: var(--meatpress-login-muted);
+	border-radius: 2px;
+	transition: color .15s ease;
+}
+
+.meatpress-login #nav a:hover,
+.meatpress-login #backtoblog a:hover,
+.meatpress-login h1 a:hover {
+	color: var(--meatpress-login-primary);
+}
+
+.meatpress-login #nav a:focus-visible,
+.meatpress-login #backtoblog a:focus-visible {
+	color: var(--meatpress-login-primary);
+	outline: 2px solid var(--meatpress-login-primary);
+	outline-offset: 2px;
+	box-shadow: none;
+}
+
+/* ---- Messages --------------------------------------------------------- */
+
+.meatpress-login .notice,
+.meatpress-login .message,
+.meatpress-login #login_error {
+	border-radius: var(--meatpress-login-radius-sm);
+	border: 1px solid var(--meatpress-login-outline);
+	border-left-width: 4px;
+	background: var(--meatpress-login-surface);
+	color: var(--meatpress-login-foreground);
+	box-shadow: none;
+	padding: .75rem 1rem;
+	margin-bottom: 1.25rem;
+}
+
+.meatpress-login #login_error,
+.meatpress-login .notice-error {
+	border-left-color: var(--meatpress-login-danger);
+}
+
+.meatpress-login .message,
+.meatpress-login .notice-success,
+.meatpress-login .notice-info {
+	border-left-color: var(--meatpress-login-primary);
+}
+
+.meatpress-login .notice-warning {
+	border-left-color: var(--meatpress-login-accent);
+}
+
+/* ---- Password strength ------------------------------------------------ */
+
+.meatpress-login #pass-strength-result {
+	border-radius: var(--meatpress-login-radius-sm);
+	border-color: var(--meatpress-login-outline);
+}
+
+/* ---- Credit ----------------------------------------------------------- */
+
+/* Discreet on purpose: the site's own logo is the identity of this screen,
+   and a framework mention that competes with it is a mention in the way. */
+.meatpress-login .meatpress-login-credit {
+	margin: 2.5rem auto .5rem;
+	text-align: center;
+	font-size: .75rem;
+	line-height: 1.4;
+	color: color-mix(in srgb, var(--meatpress-login-muted) 70%, transparent);
+}
+
+.meatpress-login .meatpress-login-credit a {
+	color: inherit;
+	text-decoration: none;
+	transition: color .15s ease;
+}
+
+.meatpress-login .meatpress-login-credit a:hover,
+.meatpress-login .meatpress-login-credit a:focus-visible {
+	color: var(--meatpress-login-primary);
+	text-decoration: underline;
+}
+
+/* ---- Narrow screens ---------------------------------------------------- */
+
+/* WordPress's own sheet drops the form's side padding below 400px and pins
+   #login to 100vw; both are undone here so the card keeps its shape and the
+   page keeps a gutter. Verified at 360px and 400px. */
+@media screen and (max-width: 400px) {
+	.meatpress-login form {
+		margin-left: 0;
+		margin-right: 0;
+		padding: 1.5rem 1.25rem;
+	}
+
+	.meatpress-login #login {
+		padding-left: 1rem;
+		padding-right: 1rem;
+		width: 100%;
+	}
+}

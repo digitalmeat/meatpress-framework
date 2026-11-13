@@ -1,0 +1,34 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Colt\Concerns;
+
+/**
+ * Trait SafeUnserialize
+ *
+ * Unserializes values stored by WordPress without ever instantiating objects:
+ * a serialized object comes back as __PHP_Incomplete_Class, never as a live
+ * instance whose magic methods could run.
+ */
+trait SafeUnserialize
+{
+    /**
+     * @param  mixed  $value
+     * @return mixed
+     */
+    protected function maybeUnserialize($value)
+    {
+        if (! is_string($value)) {
+            return $value;
+        }
+
+        $unserialized = @unserialize($value, ['allowed_classes' => false]); // nosemgrep -- allowed_classes is false: no object can be instantiated
+
+        if ($unserialized === false && $value !== serialize(false)) {
+            return $value;
+        }
+
+        return $unserialized;
+    }
+}

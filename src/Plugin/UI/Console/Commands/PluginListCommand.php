@@ -1,0 +1,368 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Plugin\UI\Console\Commands;
+
+use Illuminate\Console\Attributes\Description;
+use Illuminate\Console\Attributes\Signature;
+use Illuminate\Console\Command;
+use Meatpress\Plugin\Application\Services\PluginManager;
+use Meatpress\Plugin\Domain\Contracts\PluginModuleInterface;
+use Meatpress\Plugin\Domain\Support\PluginCollection;
+
+/**
+ * Command to list all available plugins.
+ *
+ * Displays a list of plugins with filtering and sorting options.
+ * Provides various output formats including table, list, and JSON.
+ */
+#[Description('List all available plugins with filtering and sorting options')]
+#[Signature('meatpress:plugin:list 
+                            {--active : Show only active plugins}
+                            {--inactive : Show only inactive plugins}
+                            {--enabled : Show only enabled plugins}
+                            {--disabled : Show only disabled plugins}
+                            {--network : Show only network-wide plugins}
+                            {--author= : Filter by author}
+                            {--search= : Search in plugin names and descriptions}
+                            {--sort=name : Sort by (name, version, author, status)}
+                            {--direction=asc : Sort direction (asc, desc)}
+                            {--format=table : Output format (table, list, json)}')]
+class PluginListCommand extends Command
+{
+    /**
+     * Create a new command instance.
+     *
+     * @param  PluginManager  $pluginManager  Plugin manager
+     */
+    public function __construct(protected PluginManager $pluginManager)
+    {
+        parent::__construct();
+    }
+
+    /**
+     * Execute the console command.
+     *
+     * @return int Command exit code
+     */
+    public function handle(): int
+    {
+        try {
+            $plugins = $this->getFilteredAndSortedPlugins();
+
+            if ($plugins === []) {
+                $this->info('No plugins found matching the criteria.');
+
+                return self::SUCCESS;
+            }
+
+            $format = $this->option('format');
+
+            match ($format) {
+                'json' => $this->outputAsJson($plugins),
+                'list' => $this->outputAsList($plugins),
+                default => $this->outputAsTable($plugins),
+            };
+
+            return self::SUCCESS;
+
+        } catch (\Exception $exception) {
+            $this->error('Error listing plugins: '.$exception->getMessage());
+
+            return self::FAILURE;
+        }
+    }
+
+    /**
+     * Get filtered and sorted plugins.
+     *
+     * @return array Filtered and sorted plugin modules
+     */
+    protected function getFilteredAndSortedPlugins(): array
+    {
+        // Get base collection
+        $collection = $this->pluginManager->collect();
+
+        // Apply filters
+        $collection = $this->applyFilters($collection);
+
+        // Apply search
+        if ($search = $this->option('search')) {
+            $collection = $this->applySearch($collection, $search);
+        }
+
+        // Apply sorting
+        $collection = $this->applySorting($collection);
+
+        return $collection->toArray();
+    }
+
+    /**
+     * Apply filters to the plugin collection.
+     *
+     * @param  PluginCollection  $collection  Plugin collection
+     * @return PluginCollection Filtered collection
+     */
+    protected function applyFilters($collection)
+    {
+        if ($this->option('active')) {
+            $collection = $collection->active();
+        }
+
+        if ($this->option('inactive')) {
+            $collection = $collection->inactive();
+        }
+
+        if ($this->option('enabled')) {
+            $collection = $collection->enabled();
+        }
+
+        if ($this->option('disabled')) {
+            $collection = $collection->disabled();
+        }
+
+        if ($this->option('network')) {
+            $collection = $collection->filter(fn (PluginModuleInterface $plugin): bool => $plugin->isNetworkWide());
+        }
+
+        if ($author = $this->option('author')) {
+            return $collection->filter(fn (PluginModuleInterface $plugin): bool => $plugin->getAuthor() === $author);
+        }
+
+        return $collection;
+    }
+
+    /**
+     * Apply search to the plugin collection.
+     *
+     * @param  PluginCollection  $collection  Plugin collection
+     * @param  string  $search  Search term
+     * @return PluginCollection Filtered collection
+     */
+    protected function applySearch($collection, string $search)
+    {
+        return $collection->filter(function (PluginModuleInterface $plugin) use ($search): bool {
+            $searchLower = strtolower($search);
+
+            return str_contains(strtolower($plugin->getName()), $searchLower) ||
+                   str_contains(strtolower($plugin->getDescription()), $searchLower) ||
+                   str_contains(strtolower($plugin->getAuthor()), $searchLower);
+        });
+    }
+
+    /**
+     * Apply sorting to the plugin collection.
+     *
+     * @param  PluginCollection  $collection  Plugin collection
+     * @return PluginCollection Sorted collection
+     */
+    protected function applySorting($collection)
+    {
+        $sortBy = $this->option('sort');
+        $direction = $this->option('direction');
+
+        return match ($sortBy) {
+            'version' => $collection->sortBy(fn (PluginModuleInterface $plugin): string => $plugin->getVersion(), SORT_REGULAR, $direction === 'desc'),
+            'author' => $collection->sortBy(fn (PluginModuleInterface $plugin): string => $plugin->getAuthor(), SORT_REGULAR, $direction === 'desc'),
+            'status' => $collection->sortBy(function (PluginModuleInterface $plugin): string {
+                if ($plugin->isActive() && $plugin->isEnabled()) {
+                    return 'active-enabled';
+                }
+
+                if ($plugin->isActive()) {
+                    return 'active';
+                }
+
+                if ($plugin->isEnabled()) {
+                    return 'enabled';
+                }
+
+                return 'inactive';
+            }, SORT_REGULAR, $direction === 'desc'),
+            default => $collection->sortByName($direction),
+        };
+    }
+
+    /**
+     * Output plugins as table.
+     *
+     * @param  array  $plugins  Plugin modules
+     */
+    protected function outputAsTable(array $plugins): void
+    {
+        $this->displaySummary($plugins);
+
+        $headers = ['Name', 'Version', 'Author', 'Status', 'Text Domain'];
+        $rows = [];
+
+        foreach ($plugins as $plugin) {
+            $rows[] = [
+                $plugin->getName(),
+                $plugin->getVersion(),
+                $plugin->getAuthor() ?: 'N/A',
+                $this->getStatusBadge($plugin),
+                $plugin->getTextDomain(),
+            ];
+        }
+
+        $this->table($headers, $rows);
+    }
+
+    /**
+     * Output plugins as list.
+     *
+     * @param  array  $plugins  Plugin modules
+     */
+    protected function outputAsList(array $plugins): void
+    {
+        $this->displaySummary($plugins);
+
+        foreach ($plugins as $plugin) {
+            $status = $this->getStatusBadge($plugin);
+            $this->line(sprintf('• <info>%s</info> <comment>v%s</comment> - %s', $plugin->getName(), $plugin->getVersion(), $status));
+
+            if ($plugin->getDescription()) {
+                $this->line('  '.$plugin->getDescription());
+            }
+
+            if ($plugin->getAuthor()) {
+                $this->line(sprintf('  <fg=gray>By: %s</fg=gray>', $plugin->getAuthor()));
+            }
+
+            $this->newLine();
+        }
+    }
+
+    /**
+     * Output plugins as JSON.
+     *
+     * @param  array  $plugins  Plugin modules
+     */
+    protected function outputAsJson(array $plugins): void
+    {
+        $data = [
+            'total' => count($plugins),
+            'filters' => $this->getActiveFilters(),
+            'plugins' => [],
+        ];
+
+        foreach ($plugins as $plugin) {
+            $data['plugins'][] = [
+                'name' => $plugin->getName(),
+                'version' => $plugin->getVersion(),
+                'author' => $plugin->getAuthor(),
+                'description' => $plugin->getDescription(),
+                'active' => $plugin->isActive(),
+                'enabled' => $plugin->isEnabled(),
+                'network_wide' => $plugin->isNetworkWide(),
+                'text_domain' => $plugin->getTextDomain(),
+                'slug' => $plugin->getSlug(),
+                'basename' => $plugin->getBasename(),
+                'path' => $plugin->getPath(),
+                'plugin_uri' => $plugin->getPluginUri(),
+                'author_uri' => $plugin->getAuthorUri(),
+            ];
+        }
+
+        $this->line(json_encode($data, JSON_PRETTY_PRINT));
+    }
+
+    /**
+     * Display summary information.
+     *
+     * @param  array  $plugins  Plugin modules
+     */
+    protected function displaySummary(array $plugins): void
+    {
+        $total = count($plugins);
+        $active = count(array_filter($plugins, fn (PluginModuleInterface $plugin): bool => $plugin->isActive()));
+        $enabled = count(array_filter($plugins, fn (PluginModuleInterface $plugin): bool => $plugin->isEnabled()));
+        $networkWide = count(array_filter($plugins, fn (PluginModuleInterface $plugin): bool => $plugin->isNetworkWide()));
+
+        $this->info('Plugin Summary');
+        $this->line(sprintf('Total: %d | Active: %d | Enabled: %d | Network-wide: %d', $total, $active, $enabled, $networkWide));
+        $filters = $this->getActiveFiltersText();
+
+        if ($filters !== '' && $filters !== '0') {
+            $this->line('Filters: '.$filters);
+        }
+
+        $this->newLine();
+    }
+
+    /**
+     * Get status badge for plugin.
+     *
+     * @param  PluginModuleInterface  $plugin  Plugin module
+     * @return string Status badge
+     */
+    protected function getStatusBadge(PluginModuleInterface $plugin): string
+    {
+        if ($plugin->isActive() && $plugin->isEnabled()) {
+            return '<fg=green>●</fg=green> Active';
+        }
+
+        if ($plugin->isActive()) {
+            return '<fg=yellow>●</fg=yellow> Active';
+        }
+
+        if ($plugin->isEnabled()) {
+            return '<fg=blue>●</fg=blue> Enabled';
+        }
+
+        return '<fg=red>●</fg=red> Inactive';
+    }
+
+    /**
+     * Get active filters as array.
+     *
+     * @return array Active filters
+     */
+    protected function getActiveFilters(): array
+    {
+        $filters = [];
+
+        if ($this->option('active')) {
+            $filters[] = 'active';
+        }
+
+        if ($this->option('inactive')) {
+            $filters[] = 'inactive';
+        }
+
+        if ($this->option('enabled')) {
+            $filters[] = 'enabled';
+        }
+
+        if ($this->option('disabled')) {
+            $filters[] = 'disabled';
+        }
+
+        if ($this->option('network')) {
+            $filters[] = 'network-wide';
+        }
+
+        if ($author = $this->option('author')) {
+            $filters[] = 'author:'.$author;
+        }
+
+        if ($search = $this->option('search')) {
+            $filters[] = 'search:'.$search;
+        }
+
+        return $filters;
+    }
+
+    /**
+     * Get active filters as text.
+     *
+     * @return string Active filters text
+     */
+    protected function getActiveFiltersText(): string
+    {
+        $filters = $this->getActiveFilters();
+
+        return implode(', ', $filters);
+    }
+}

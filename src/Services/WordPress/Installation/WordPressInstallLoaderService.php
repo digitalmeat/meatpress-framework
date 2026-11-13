@@ -1,0 +1,209 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Services\WordPress\Installation;
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Config;
+use Meatpress\Hook\Domain\Contract\Filter;
+use Meatpress\WordPress\AppUrl;
+
+/**
+ * Service for loading WordPress core files and initializing the environment.
+ *
+ * This service handles the bootstrapping process for WordPress installation,
+ * including loading core files, setting up globals, and initializing
+ * essential WordPress components.
+ */
+class WordPressInstallLoaderService
+{
+    /**
+     * List of required WordPress core files.
+     *
+     * @var array<int, string>
+     */
+    private const array CORE_FILES = [
+        '/l10n.php',
+        '/class-wp-textdomain-registry.php',
+        '/class-wp-walker.php',
+        '/theme.php',
+        '/cron.php',
+        '/kses.php',
+        '/user.php',
+        '/pluggable.php',
+        '/capabilities.php',
+        '/blocks.php',
+        '/general-template.php',
+        '/link-template.php',
+        '/rest-api.php',
+        '/post.php',
+        '/http.php',
+        '/rewrite.php',
+        '/default-constants.php',
+    ];
+
+    /**
+     * List of required WordPress classes.
+     *
+     * @var array<int, string>
+     */
+    private const array CORE_CLASSES = [
+        '/class-wp-rewrite.php',
+        '/class-wp-theme.php',
+        '/class-wp-roles.php',
+        '/class-wp-role.php',
+        '/class-wp-user.php',
+        '/class-wp-post.php',
+        // The HTTP stack, in the order wp-settings.php loads it: wp_install()
+        // calls wp_remote_get() on the site URL, and WP_Http builds a
+        // WP_Http_Cookie for every Set-Cookie header it gets back.
+        '/class-wp-http.php',
+        '/class-wp-http-streams.php',
+        '/class-wp-http-curl.php',
+        '/class-wp-http-proxy.php',
+        '/class-wp-http-cookie.php',
+        '/class-wp-http-encoding.php',
+        '/class-wp-http-response.php',
+        '/class-wp-http-requests-response.php',
+        '/class-wp-http-requests-hooks.php',
+        '/class-wp-block-parser.php',
+    ];
+
+    protected Filter $filter;
+
+    public function __construct(Application $app)
+    {
+        $this->filter = $app->get(Filter::class);
+    }
+
+    /**
+     * Bootstrap the WordPress installation environment.
+     *
+     * Initializes all necessary components for WordPress installation:
+     * - Sets global variables
+     * - Loads core files and classes
+     * - Loads admin files
+     * - Defines constants
+     * - Initializes WordPress components
+     *
+     * @throws \RuntimeException If essential WordPress files cannot be loaded
+     */
+    public function bootstrap(): void
+    {
+        $this->setGlobals()
+            ->loadCoreFiles()
+            ->loadCoreClasses()
+            ->loadAdminFiles()
+            ->defineConstants()
+            ->initializeWordPress();
+    }
+
+    /**
+     * Set global variables required for WordPress.
+     */
+    private function setGlobals(): self
+    {
+        $GLOBALS['locale'] = Config::get('app.locale', 'en_US');
+
+        return $this;
+    }
+
+    /**
+     * Load WordPress core functionality files.
+     *
+     * @throws \RuntimeException If core files cannot be loaded
+     */
+    private function loadCoreFiles(): self
+    {
+        foreach (self::CORE_FILES as $file) {
+            require_once ABSPATH.WPINC.$file;
+        }
+
+        return $this;
+    }
+
+    /**
+     * Load WordPress core class files.
+     *
+     * @throws \RuntimeException If class files cannot be loaded
+     */
+    private function loadCoreClasses(): self
+    {
+        foreach (self::CORE_CLASSES as $file) {
+            require_once ABSPATH.WPINC.$file;
+        }
+
+        return $this;
+    }
+
+    /**
+     * Load WordPress admin files required for installation.
+     *
+     * @throws \RuntimeException If admin files cannot be loaded
+     */
+    private function loadAdminFiles(): self
+    {
+        require_once ABSPATH.'wp-admin/includes/upgrade.php';
+
+        return $this;
+    }
+
+    /**
+     * Define WordPress constants required for installation.
+     */
+    private function defineConstants(): self
+    {
+        $appUrl = AppUrl::normalize((string) Config::get('app.url'));
+
+        if (! defined('COOKIEHASH')) {
+            define('COOKIEHASH', md5($appUrl));
+        }
+
+        $cookiePath = $this->getCookiePath($appUrl);
+
+        if (! defined('COOKIEPATH')) {
+            define('COOKIEPATH', $cookiePath);
+        }
+
+        if (! defined('SITECOOKIEPATH')) {
+            define('SITECOOKIEPATH', $cookiePath);
+        }
+
+        wp_plugin_directory_constants();
+        wp_cookie_constants();
+
+        return $this;
+    }
+
+    /**
+     * Initialize WordPress components.
+     *
+     * Sets up text domain registry, permalink structure, and rewrite rules.
+     */
+    private function initializeWordPress(): self
+    {
+        // Initialize text domain registry
+        $GLOBALS['wp_textdomain_registry'] = new \WP_Textdomain_Registry;
+        $GLOBALS['wp_textdomain_registry']->init();
+
+        // Configure permalink structure
+        $this->filter->add('pre_option_permalink_structure', fn (): string => '');
+
+        // Initialize rewrite component
+        $GLOBALS['wp_rewrite'] = new \WP_Rewrite;
+
+        return $this;
+    }
+
+    /**
+     * Get cookie path from application URL.
+     *
+     * @param  string  $appUrl  The application URL
+     * @return string The cookie path
+     */
+    private function getCookiePath(string $appUrl): string
+    {
+        return preg_replace('|https?://[^/]+|i', '', $appUrl.'/');
+    }
+}

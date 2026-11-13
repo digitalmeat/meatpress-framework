@@ -1,0 +1,231 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Modules\Infrastructure\Providers;
+
+use Illuminate\Container\Container;
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\ServiceProvider;
+use Meatpress\Config\Domain\Contracts\ConfigRepositoryInterface;
+use Meatpress\Doctor\Infrastructure\Providers\DoctorServiceProvider;
+use Meatpress\Hook\Domain\Contract\Action;
+use Meatpress\Hook\Domain\Contract\Filter;
+use Meatpress\Modules\Application\Services\ModuleVersions;
+use Meatpress\Modules\Application\UseCases\ApplyModulesUseCase;
+use Meatpress\Modules\Application\UseCases\DiscoverModulesUseCase;
+use Meatpress\Modules\Domain\Contracts\ModuleDiscoveryOrchestratorInterface;
+use Meatpress\Modules\Infrastructure\Checks\ModuleActivationCheck;
+use Meatpress\Modules\Infrastructure\Services\LaravelModuleAssets;
+use Meatpress\Modules\Infrastructure\Services\LeanModuleMake;
+use Meatpress\Modules\Infrastructure\Services\ModuleAssetManager;
+use Meatpress\Modules\Infrastructure\Services\ModuleAutoloader;
+use Meatpress\Modules\Infrastructure\Services\ModuleComponentManager;
+use Meatpress\Modules\Infrastructure\Services\ModuleConfigurationLoader;
+use Meatpress\Modules\Infrastructure\Services\ModuleDiscoveryOrchestrator;
+use Meatpress\Modules\Infrastructure\Services\ModuleRouteLoader;
+use Meatpress\Modules\Infrastructure\Services\ModuleTemplate;
+use Meatpress\Modules\UI\Console\MakeModuleCommand;
+use Meatpress\Modules\UI\Console\ModuleConnectorCommand;
+use Meatpress\Modules\UI\Console\ModuleFrontendCommand;
+use Meatpress\Modules\UI\Console\ModuleOutdatedCommand;
+use Meatpress\Modules\UI\Http\ModulesAdminPage;
+use Meatpress\Modules\UI\Http\ModuleVersionsHealthCheck;
+use Meatpress\VersionCheck\Domain\Contracts\VersionSourceResolver;
+use Meatpress\VersionCheck\Infrastructure\Sources\HttpGet;
+use Meatpress\VersionCheck\Infrastructure\Sources\VersionSources;
+
+/**
+ * Main service provider for the generic module system.
+ *
+ * This provider follows the nwidart/laravel-modules pattern but adapted for our architecture.
+ */
+class ModuleServiceProvider extends ServiceProvider
+{
+    /**
+     * WP-Cron event refreshing the latest versions of the modules installed by Composer.
+     */
+    public const string REFRESH_VERSIONS_EVENT = 'meatpress_refresh_module_versions';
+
+    public function register(): void
+    {
+        $this->registerDomainContracts();
+        $this->registerUseCases();
+        $this->registerApplicationServices();
+        $this->registerLeanModuleMake();
+
+        // Before any provider boots: WordPress loads, and fires init, while the providers boot
+        $setUpModuleAssets = function (): void {
+            $this->app->make(LaravelModuleAssets::class)->setUp();
+        };
+
+        $this->app->isBooted() ? $setUpModuleAssets() : $this->app->booting($setUpModuleAssets);
+
+        $this->mergeConfigFrom(__DIR__.'/../../../../config/modules-defaults.php', 'modules');
+
+        $this->app->singleton(VersionSources::class, fn (Container $app): VersionSources => new VersionSources(
+            $app->make(HttpGet::class),
+            base_path('composer.json'),
+            $app->make('config')->get('modules.versions.github_token'),
+        ));
+
+        $this->app->bind(VersionSourceResolver::class, VersionSources::class);
+    }
+
+    public function boot(): void
+    {
+        // Load helper functions
+        $this->loadHelperFunctions();
+
+        // Discover and apply all modules
+        $this->app->make(DiscoverModulesUseCase::class)->execute();
+        $this->app->make(ApplyModulesUseCase::class)->execute();
+
+        // Fire event when modules are ready
+        $this->app->booted(function (): void {
+            Event::dispatch('modules.routes.registered');
+        });
+
+        // A check of meatpress:doctor and Site Health; tagged on boot, so it comes after the framework's own
+        $this->app->tag([ModuleActivationCheck::class], DoctorServiceProvider::CHECKS_TAG);
+
+        // Activation connector settings, read by nwidart while it registers: published, never merged
+        $this->publishes([
+            __DIR__.'/../../../../config/modules.php' => $this->app->configPath('modules.php'),
+        ], 'meatpress-modules');
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([MakeModuleCommand::class, ModuleConnectorCommand::class, ModuleFrontendCommand::class, ModuleOutdatedCommand::class]);
+        }
+
+        $this->registerModulesAdminPage();
+    }
+
+    /**
+     * The Modules view of the Plugins screen.
+     */
+    private function registerModulesAdminPage(): void
+    {
+        if (! $this->app->bound(Action::class) || ! $this->app->bound(Filter::class)) {
+            return;
+        }
+
+        $action = $this->app->make(Action::class);
+        $filter = $this->app->make(Filter::class);
+
+        $action->add('admin_menu', fn () => $this->app->make(ModulesAdminPage::class)->addMenuPage());
+        $action->add('load-plugins_page_'.ModulesAdminPage::SLUG, fn () => $this->app->make(ModulesAdminPage::class)->handleRequest());
+
+        $filter->add('views_plugins', fn (array $views): array => $this->app->make(ModulesAdminPage::class)->addView($views));
+
+        // Versions of the modules installed by Composer: fetched once a day, never on a front-end request
+        $filter->add('site_status_tests', fn (array $tests): array => $this->app->make(ModuleVersionsHealthCheck::class)->addTests($tests));
+
+        $action->add(self::REFRESH_VERSIONS_EVENT, fn () => $this->app->make(ModuleVersions::class)->refresh());
+        $action->add('admin_init', function (): void {
+            if (function_exists('wp_next_scheduled') && ! wp_next_scheduled(self::REFRESH_VERSIONS_EVENT)) {
+                wp_schedule_event(time() + 60, 'daily', self::REFRESH_VERSIONS_EVENT);
+            }
+        });
+    }
+
+    /**
+     * Have nwidart/laravel-modules' module:make write the lean Meatpress module,
+     * unless the project published config/modules.php.
+     */
+    private function registerLeanModuleMake(): void
+    {
+        $this->app->singleton(ModuleTemplate::class);
+        $this->app->singleton(LeanModuleMake::class, fn (Application $app): LeanModuleMake => new LeanModuleMake(
+            $app->make('config'),
+            $app->make(ModuleTemplate::class),
+            $app->configPath('modules.php'),
+        ));
+
+        $this->app->make(LeanModuleMake::class)->applyDefaults();
+
+        Event::listen('modules.*.created', function (string $event, array $payload): void {
+            if (isset($payload[0]) && is_object($payload[0])) {
+                $this->app->make(LeanModuleMake::class)->writeOver($payload[0]);
+            }
+        });
+    }
+
+    /**
+     * Register domain contracts with their infrastructure implementations.
+     */
+    private function registerDomainContracts(): void
+    {
+        // Register ModuleAutoloader service
+        $this->app->singleton(ModuleAutoloader::class, fn (Container $app): ModuleAutoloader => new ModuleAutoloader($app));
+
+        // Register ModuleDiscoveryOrchestrator
+        $this->app->singleton(ModuleDiscoveryOrchestrator::class, fn (Container $app): ModuleDiscoveryOrchestrator => new ModuleDiscoveryOrchestrator($app));
+
+        // Register interface binding
+        $this->app->bind(ModuleDiscoveryOrchestratorInterface::class, ModuleDiscoveryOrchestrator::class);
+
+        // Register alias for easier access
+        $this->app->alias(ModuleDiscoveryOrchestrator::class, 'modules.discovery');
+    }
+
+    /**
+     * Register application use cases.
+     */
+    private function registerUseCases(): void
+    {
+        $this->app->singleton(function (Application $app): DiscoverModulesUseCase {
+            $logger = null;
+            try {
+                $logger = $app->make('log');
+            } catch (\Exception) {
+                // Logger not available during early bootstrap
+            }
+
+            return new DiscoverModulesUseCase(
+                $app->make(ModuleDiscoveryOrchestrator::class),
+                $logger
+            );
+        });
+
+        $this->app->singleton(function (Application $app): ApplyModulesUseCase {
+            $logger = null;
+            try {
+                $logger = $app->make('log');
+            } catch (\Exception) {
+                // Logger not available during early bootstrap
+            }
+
+            return new ApplyModulesUseCase(
+                $app->make(ModuleDiscoveryOrchestrator::class),
+                $logger
+            );
+        });
+    }
+
+    /**
+     * Register application services.
+     */
+    private function registerApplicationServices(): void
+    {
+        $this->app->singleton(ModuleConfigurationLoader::class, fn (Container $app): ModuleConfigurationLoader => new ModuleConfigurationLoader(
+            $app,
+            $app->make(ConfigRepositoryInterface::class)
+        ));
+
+        $this->app->singleton(ModuleComponentManager::class, fn (Container $app): ModuleComponentManager => new ModuleComponentManager($app));
+
+        $this->app->singleton(ModuleAssetManager::class, fn (Container $app): ModuleAssetManager => new ModuleAssetManager($app));
+
+        $this->app->singleton(ModuleRouteLoader::class, fn (Container $app): ModuleRouteLoader => new ModuleRouteLoader($app));
+    }
+
+    /**
+     * Load helper functions.
+     */
+    protected function loadHelperFunctions(): void
+    {
+        require_once __DIR__.'/../../UI/Helpers/discovery_functions.php';
+    }
+}

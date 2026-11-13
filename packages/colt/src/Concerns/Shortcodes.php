@@ -1,0 +1,100 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Colt\Concerns;
+
+use Meatpress\Colt\Colt;
+use Thunder\Shortcode\Parser\ParserInterface;
+use Thunder\Shortcode\Parser\RegularParser;
+use Thunder\Shortcode\ShortcodeFacade;
+
+/**
+ * Trait ShortcodesTrait
+ */
+trait Shortcodes
+{
+    /**
+     * @var array
+     */
+    protected static $shortcodes = [];
+
+    /** @var ParserInterface */
+    private $shortcodeParser;
+
+    /**
+     * @param  string  $tag  the shortcode tag
+     * @param  \Closure  $function  the shortcode handling function
+     */
+    public static function addShortcode($tag, $function)
+    {
+        self::$shortcodes[$tag] = $function;
+    }
+
+    /**
+     * Removes a shortcode handler.
+     *
+     * @param  string  $tag  the shortcode tag
+     */
+    public static function removeShortcode($tag)
+    {
+        if (isset(self::$shortcodes[$tag])) {
+            unset(self::$shortcodes[$tag]);
+        }
+    }
+
+    /**
+     * Change the default shortcode parser
+     */
+    public function setShortcodeParser(ParserInterface $parser): self
+    {
+        $this->shortcodeParser = $parser;
+
+        return $this;
+    }
+
+    /**
+     * Process the shortcodes.
+     *
+     * @param  string  $content  the content
+     * @return string
+     */
+    public function stripShortcodes($content)
+    {
+        $handler = $this->getShortcodeHandlerInstance();
+
+        $this->parseClassShortcodes($handler);
+        $this->parseConfigShortcodes($handler);
+
+        return $handler->process($content);
+    }
+
+    private function getShortcodeHandlerInstance(): ShortcodeFacade
+    {
+        if (Colt::isLaravel()) {
+            return app()->make(ShortcodeFacade::class);
+        }
+
+        return tap(new ShortcodeFacade, function (ShortcodeFacade $handler): void {
+            $parser = $this->shortcodeParser ?: new RegularParser;
+            $handler->setParser($parser);
+        });
+    }
+
+    private function parseClassShortcodes(ShortcodeFacade $facade)
+    {
+        foreach (self::$shortcodes as $tag => $func) {
+            $facade->addHandler($tag, $func);
+        }
+    }
+
+    private function parseConfigShortcodes(ShortcodeFacade $facade)
+    {
+        if (Colt::isLaravel()) {
+            $shortcodes = config('colt.shortcodes', []);
+            foreach ($shortcodes as $tag => $class) {
+                $facade->addHandler($tag, [new $class, 'render']);
+            }
+        }
+    }
+}

@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+use Meatpress\Query\PostQuery;
+
+test('Status: post_status', function () {
+    $args = PostQuery::select()
+        ->postStatus('publish')
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'post_status' => 'publish',
+    ]);
+});

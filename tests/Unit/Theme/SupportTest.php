@@ -1,0 +1,33 @@
+<?php
+
+declare(strict_types=1);
+
+use Meatpress\Config\Domain\Contracts\ConfigRepositoryInterface;
+use Meatpress\Hook\Domain\Contract\Action;
+use Meatpress\Theme\Infrastructure\Services\Support;
+use Mockery as m;
+use Psr\Container\ContainerInterface;
+
+require_once __DIR__.'/../helpers.php';
+
+describe('Support', function (): void {
+    it('resolves Action from container', function (): void {
+        $mockAction = m::mock(Action::class);
+        $mockContainer = m::mock(ContainerInterface::class);
+        $mockConfig = m::mock(ConfigRepositoryInterface::class);
+
+        // Set up container mock to return our dependencies
+        $mockContainer->shouldReceive('get')
+            ->with(Action::class)
+            ->andReturn($mockAction);
+
+        if (! function_exists('Meatpress\\Theme\\config')) {
+            eval('namespace Meatpress\\Theme; function config($key) { return "/fake/theme/path"; }');
+        }
+
+        $component = new Support($mockContainer, $mockConfig);
+        $ref = new ReflectionProperty($component, 'app');
+
+        expect($ref->getValue($component))->toBe($mockContainer);
+    });
+});

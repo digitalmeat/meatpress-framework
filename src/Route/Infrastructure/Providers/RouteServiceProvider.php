@@ -1,0 +1,251 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Route\Infrastructure\Providers;
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
+use Illuminate\Routing\Events\RouteMatched;
+use Illuminate\Session\Middleware\StartSession;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Meatpress\Route\Application\Services\AnsweringTemplate;
+use Meatpress\Route\Application\UseCases\BindWordPressParametersUseCase;
+use Meatpress\Route\Application\UseCases\RegisterWordPressTypesUseCase;
+use Meatpress\Route\Domain\Contracts\ConditionResolverInterface;
+use Meatpress\Route\Domain\Contracts\WordPressRouteInterface;
+use Meatpress\Route\Domain\Contracts\WordPressTypeResolverInterface;
+use Meatpress\Route\Infrastructure\Listeners\ApplyApplicationRouteContext;
+use Meatpress\Route\Infrastructure\Middleware\WordPressBindings;
+use Meatpress\Route\Infrastructure\Middleware\WordPressHeaders;
+use Meatpress\Route\Infrastructure\Middleware\WordPressShutdown;
+use Meatpress\Route\Infrastructure\Middleware\WordPressTemplateEnhancement;
+use Meatpress\Route\Infrastructure\Services\Contracts\WordPressConditionManagerInterface;
+use Meatpress\Route\Infrastructure\Services\ExtendedRouter;
+use Meatpress\Route\Infrastructure\Services\Resolvers\WordPressTypeResolver;
+use Meatpress\Route\Infrastructure\Services\WordPressConditionManager;
+use Meatpress\Route\Infrastructure\Services\WordPressRoutingService;
+use Meatpress\Route\UI\Http\Controllers\FrontendController;
+
+/**
+ * Service provider for WordPress-specific routing functionalities.
+ *
+ * This provider extends Laravel's routing system with WordPress-specific
+ * functionality without replacing the core routing components.
+ */
+class RouteServiceProvider extends ServiceProvider
+{
+    /**
+     * The priority level of the service provider.
+     * A lower priority means it will be loaded later.
+     */
+    public int $priority = -99;
+
+    /**
+     * WordPress middleware stack applied to all WordPress routes.
+     */
+    public const WORDPRESS_MIDDLEWARE = [
+        WordPressBindings::class,
+        WordPressHeaders::class,
+        WordPressShutdown::class,
+        WordPressTemplateEnhancement::class,
+    ];
+
+    /**
+     * Session stack of Laravel's `web` group, left out of WordPress routes
+     * when `wordpress.sessions` is false. PreventRequestForgery is
+     * the Laravel 13 CSRF middleware (ValidateCsrfToken is deprecated).
+     */
+    public const SESSION_MIDDLEWARE = [
+        StartSession::class,
+        ShareErrorsFromSession::class,
+        PreventRequestForgery::class,
+    ];
+
+    /**
+     * Register any application services.
+     */
+    public function register(): void
+    {
+        $this->registerDomainContracts();
+        $this->registerUseCases();
+        $this->registerApplicationServices();
+    }
+
+    /**
+     * Bootstrap any application services.
+     *
+     * Declares the 'wordpress' macros, enabling the definition of routes specific
+     * to various WordPress content types (single, page, archive, etc.).
+     */
+    public function boot(): void
+    {
+        $this->registerWpMatchMacro();
+        $this->registerWpMacro();
+
+        Event::listen(RouteMatched::class, [ApplyApplicationRouteContext::class, 'handle']);
+
+        // Register fallback route after modules have loaded their routes.
+        // Two triggers ensure it works with or without the modules system:
+        // 1. Event from ModuleServiceProvider (when modules are present)
+        // 2. Booted callback (when no modules, or event wasn't dispatched)
+        Event::listen('modules.routes.registered', fn () => $this->bootFallbackRoute());
+
+        $this->app->booted(fn () => $this->bootFallbackRoute());
+    }
+
+    /**
+     * Register domain contracts with their infrastructure implementations.
+     */
+    private function registerDomainContracts(): void
+    {
+        // Which template answered: written by the frontend controller, read
+        // by debugging tools later in the same request
+        $this->app->singleton(AnsweringTemplate::class);
+
+        // Register the WordPress type resolver
+        $this->app->singleton(WordPressTypeResolverInterface::class, WordPressTypeResolver::class);
+
+        // Register the condition manager (implements both interfaces)
+        $this->app->singleton(WordPressConditionManagerInterface::class, fn ($app): WordPressConditionManager => new WordPressConditionManager($app));
+
+        // Bind the domain interface to the same instance
+        $this->app->bind(ConditionResolverInterface::class, fn ($app) => $app->make(WordPressConditionManagerInterface::class));
+
+        // Override the default router with our extended version (for custom Route model)
+        $this->app->extend('router', fn ($router, Application $app): ExtendedRouter => new ExtendedRouter(
+            $app->make('events'),
+            $app,
+            $app->make(WordPressConditionManagerInterface::class),
+        ));
+    }
+
+    /**
+     * Register application use cases.
+     */
+    private function registerUseCases(): void
+    {
+        $this->app->singleton(function ($app): RegisterWordPressTypesUseCase {
+            $logger = null;
+            try {
+                $logger = $app->make('log');
+            } catch (\Exception) {
+                // Logger not available during early bootstrap
+            }
+
+            return new RegisterWordPressTypesUseCase(
+                $app->make(WordPressTypeResolverInterface::class),
+                $logger
+            );
+        });
+
+        $this->app->singleton(function ($app): BindWordPressParametersUseCase {
+            $logger = null;
+            try {
+                $logger = $app->make('log');
+            } catch (\Exception) {
+                // Logger not available during early bootstrap
+            }
+
+            return new BindWordPressParametersUseCase(
+                $app->make(WordPressTypeResolverInterface::class),
+                $logger
+            );
+        });
+    }
+
+    /**
+     * Register application services.
+     */
+    private function registerApplicationServices(): void
+    {
+        // Register the routing service (orchestrates condition resolution and use cases)
+        $this->app->singleton(WordPressRoutingService::class, fn ($app): WordPressRoutingService => new WordPressRoutingService(
+            $app->make(WordPressConditionManagerInterface::class),
+            $app->make(RegisterWordPressTypesUseCase::class),
+            $app->make(BindWordPressParametersUseCase::class),
+        ));
+
+        // Register WordPress types in the container for dependency injection
+        $this->app->booted(function (): void {
+            $this->app->make(RegisterWordPressTypesUseCase::class)->execute($this->app);
+        });
+    }
+
+    /**
+     * Register the wpMatch macro for specific HTTP verbs.
+     */
+    protected function registerWpMatchMacro(): void
+    {
+        Route::macro('wpMatch', function (array|string $methods, string $condition, ...$args) {
+            if ($args === []) {
+                throw new \InvalidArgumentException('The wp route requires at least a condition and a callback.');
+            }
+
+            // Resolve condition alias via the routing service
+            $resolvedCondition = resolve(WordPressRoutingService::class)->resolveCondition($condition);
+
+            // Create a unique URI for the route
+            $uri = $condition;
+            if (count($args) > 1) {
+                $paramHash = md5(serialize(array_slice($args, 0, -1)));
+                $uri .= '_'.$paramHash;
+            }
+
+            // Last argument is always the callback
+            $action = $args[count($args) - 1];
+
+            // Create the route with specific HTTP methods
+            $route = Route::addRoute($methods, $uri, $action);
+            $route->setIsWordPressRoute(true);
+            $route->setCondition($resolvedCondition);
+
+            // Extract condition parameters (all arguments except the last one)
+            if (count($args) > 1) {
+                $route->setConditionParameters(array_slice($args, 0, count($args) - 1));
+            }
+
+            // Add WordPress middleware
+            $route->middleware(RouteServiceProvider::WORDPRESS_MIDDLEWARE);
+
+            if (! config('wordpress.sessions', true)) {
+                $route->withoutMiddleware(RouteServiceProvider::SESSION_MIDDLEWARE);
+            }
+
+            return $route;
+        });
+    }
+
+    /**
+     * Register the wp macro as a shortcut for all HTTP verbs.
+     */
+    protected function registerWpMacro(): void
+    {
+        Route::macro('wp', fn (string $condition, ...$args) => Route::wpMatch(
+            ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
+            $condition,
+            ...$args
+        ));
+    }
+
+    /**
+     * Register the WordPress fallback route after all other routes.
+     */
+    protected function bootFallbackRoute(): void
+    {
+        $this->app->instance('route.fallback.registered', true);
+
+        $route = Route::any('{any}', [FrontendController::class, 'handle'])
+            ->where('any', '^(?!api/).*')
+            ->middleware(self::WORDPRESS_MIDDLEWARE);
+
+        // WordPress answers here, so its own verdict on the request (a 404
+        // included) stands: see ApplyApplicationRouteContext.
+        if ($route instanceof WordPressRouteInterface) {
+            $route->setIsWordPressRoute(true);
+        }
+    }
+}

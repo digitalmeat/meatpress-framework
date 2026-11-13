@@ -1,0 +1,30 @@
+<?php
+
+declare(strict_types=1);
+
+namespace DummyNamespace;
+
+use Meatpress\Attributes\Taxonomy;
+use Meatpress\Attributes\Taxonomy\ShowTagcloud;
+use Meatpress\Attributes\Taxonomy\ShowInQuickEdit;
+use Meatpress\Attributes\Taxonomy\ShowAdminColumn;
+use Meatpress\Attributes\Taxonomy\Hierarchical;
+use Meatpress\Attributes\Taxonomy\ShowInRest;
+use Meatpress\Attributes\Taxonomy\ObjectType;
+
+/**
+ * DummyName taxonomy.
+ *
+ * This class defines the DummyName custom taxonomy using PHP attributes
+ * for WordPress registration.
+ */
+#[Taxonomy]
+#[ShowTagcloud]
+#[ShowInQuickEdit]
+#[ShowAdminColumn]
+#[Hierarchical]
+#[ShowInRest]
+#[ObjectType(['DummyPostType'])]
+class DummyClass
+{
+}

@@ -1,0 +1,34 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\BlockCategory\Infrastructure\Registrars;
+
+use Meatpress\BlockCategory\Domain\Contracts\BlockCategoryRegistrarInterface;
+use Meatpress\Collection\Domain\Contracts\CollectionInterface;
+
+/**
+ * WordPress implementation of BlockCategoryRegistrarInterface.
+ *
+ * This is an adapter in hexagonal architecture that connects
+ * our domain to WordPress for block category registration.
+ */
+class BlockCategoryRegistrar implements BlockCategoryRegistrarInterface
+{
+    /**
+     * {@inheritdoc}
+     */
+    public function registerCategories(CollectionInterface $categories): void
+    {
+        if ($categories->isEmpty()) {
+            return;
+        }
+
+        if (function_exists('add_filter')) {
+            \add_filter('block_categories_all', fn (array $existingCategories): array => array_merge(
+                $existingCategories,
+                $categories->values()->all()
+            ));
+        }
+    }
+}

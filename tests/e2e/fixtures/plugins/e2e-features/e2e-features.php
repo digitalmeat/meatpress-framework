@@ -1,0 +1,21 @@
+<?php
+
+/**
+ * Plugin Name: E2E Features
+ * Description: Meatpress browser test fixture — every framework feature it declares has an effect a test can see. Never activate it on a real site.
+ * Version: 1.0.0
+ * License: MIT
+ */
+
+declare(strict_types=1);
+
+use Meatpress\Modules\Domain\Enums\ModuleType;
+
+if (! defined('ABSPATH')) {
+    exit;
+}
+
+// The site follows APP_ENV (local), and WordPress 7.1 refuses pings outside production: the trackback test needs them.
+add_filter('wp_should_disable_pings_for_environment', '__return_false');
+
+meatpress_register(ModuleType::Plugin, 'e2e-features', __DIR__);

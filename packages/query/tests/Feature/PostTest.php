@@ -1,0 +1,116 @@
+<?php
+
+declare(strict_types=1);
+
+use Meatpress\Query\PostQuery;
+
+test('Post: post_type', function () {
+    $args = PostQuery::select()
+        ->postType('article')
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'post_type' => 'article',
+    ]);
+});
+
+test('Post: p (post_id)', function () {
+    $args = PostQuery::select()
+        ->postId(42)
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'p' => 42,
+    ]);
+});
+
+test('Post: name (post_slug)', function () {
+    $args = PostQuery::select()
+        ->postSlug('mon-article')
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'name' => 'mon-article',
+    ]);
+});
+
+test('Post: post_parent', function () {
+    $args = PostQuery::select()
+        ->postParent(5)
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'post_parent' => 5,
+    ]);
+});
+
+test('Post: post_parent__in', function () {
+    $args = PostQuery::select()
+        ->whereParentIn([1, 2, 3])
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'post_parent__in' => [1, 2, 3],
+    ]);
+});
+
+test('Post: post_parent__not_in', function () {
+    $args = PostQuery::select()
+        ->whereParentNotIn([4, 5, 6])
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'post_parent__not_in' => [4, 5, 6],
+    ]);
+});
+
+test('Post: post__in', function () {
+    $args = PostQuery::select()
+        ->whereIn([7, 8, 9])
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'post__in' => [7, 8, 9],
+    ]);
+});
+
+test('Post: post__not_in', function () {
+    $args = PostQuery::select()
+        ->whereNotIn([10, 11, 12])
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'post__not_in' => [10, 11, 12],
+    ]);
+});
+
+test('Post: post_name__in', function () {
+    $args = PostQuery::select()
+        ->slugIn(['slug-1', 'slug-2'])
+        ->getArguments();
+
+    expect($args)->toMatchArray([
+        'post_name__in' => ['slug-1', 'slug-2'],
+    ]);
+});
+
+test('Post: post_type accepts an array', function () {
+    $args = PostQuery::select()
+        ->postType(['post', 'page'])
+        ->getArguments();
+
+    expect($args['post_type'])->toBe(['post', 'page']);
+});
+
+test('Post: post_type defaults to any so that no type is filtered out', function () {
+    expect(PostQuery::select()->getArguments()['post_type'])->toBe('any')
+        ->and(PostQuery::find(5)->getArguments()['post_type'])->toBe('any');
+});
+
+test('Post: page_id, pagename, title and menu_order', function () {
+    $args = PostQuery::select()
+        ->pageId(7)->pagename('parent/child')->title('Hello')->menuOrder(3)
+        ->getArguments();
+
+    expect($args)->toMatchArray(['page_id' => 7, 'pagename' => 'parent/child', 'title' => 'Hello', 'menu_order' => 3]);
+});

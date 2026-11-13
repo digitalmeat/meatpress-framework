@@ -1,0 +1,259 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Filesystem\Filesystem;
+use Illuminate\Support\Facades\Http;
+use Meatpress\Application\Domain\Contracts\DebugDetectorInterface;
+use Meatpress\Discovery\Application\Services\DiscoveryManager;
+use Meatpress\Discovery\Domain\Contracts\DiscoveryLocationInterface;
+use Meatpress\Discovery\Domain\Models\DiscoveryLocation;
+use Meatpress\Discovery\Infrastructure\Adapters\LaravelDiscoveryCacheManagerFactory;
+use Meatpress\Discovery\Infrastructure\Services\DiscoveryCacheManager;
+use Meatpress\Doctor\Domain\Enums\RunContext;
+use Meatpress\Doctor\Infrastructure\Checks\AppUrlCheck;
+use Meatpress\Doctor\Infrastructure\Checks\DiscoveryCacheCheck;
+use Meatpress\Doctor\Infrastructure\Checks\EnvironmentFileCheck;
+use Meatpress\Doctor\Infrastructure\Checks\PatchesLockCheck;
+use Meatpress\Doctor\Infrastructure\Checks\PublicRootCheck;
+use Meatpress\Doctor\Infrastructure\Checks\WordPressCorePatchCheck;
+use Spatie\StructureDiscoverer\Cache\DiscoverCacheDriver;
+
+if (! function_exists('putFile')) {
+    function putFile(string $path, string $contents): void
+    {
+        if (! is_dir(dirname($path))) {
+            mkdir(dirname($path), 0777, true);
+        }
+
+        file_put_contents($path, $contents);
+    }
+}
+
+beforeEach(function (): void {
+    $this->project = sys_get_temp_dir().'/meatpress-doctor-'.uniqid();
+    mkdir($this->project, 0777, true);
+    $this->previousBasePath = app()->basePath();
+    app()->setBasePath($this->project);
+});
+
+afterEach(function (): void {
+    app()->setBasePath($this->previousBasePath);
+    (new Filesystem)->deleteDirectory($this->project);
+});
+
+function corePatchCheck(string $project, bool $overrideActive): WordPressCorePatchCheck
+{
+    return new WordPressCorePatchCheck($project.'/wp-includes', fn (): array => [
+        'override_active' => $overrideActive,
+        'helper_file' => '/vendor/laravel/framework/src/Illuminate/Foundation/helpers.php',
+    ]);
+}
+
+describe('WordPress core patch', function (): void {
+    beforeEach(function (): void {
+        mkdir($this->project.'/wp-includes');
+    });
+
+    it('fails when the core still declares __(), as composer-patches leaves it when it skips the patch', function (): void {
+        file_put_contents($this->project.'/wp-includes/l10n.php', "<?php\nfunction __( \$text, \$domain = 'default' ) {}\n");
+
+        $result = corePatchCheck($this->project, true)->run(RunContext::Console);
+
+        expect($result->status->value)->toBe('error')
+            ->and($result->fix)->toBe('composer patches-relock && composer patches-repatch');
+    });
+
+    it("warns when the core is patched but __() is not Meatpress's", function (): void {
+        file_put_contents($this->project.'/wp-includes/l10n.php', "<?php\nfunction __wp( \$text, \$domain = 'default' ) {}\n");
+
+        $result = corePatchCheck($this->project, false)->run(RunContext::Console);
+
+        expect($result->status->value)->toBe('warning')
+            ->and($result->details[0])->toContain('laravel/framework');
+    });
+
+    it("passes a patched core whose __() is Meatpress's", function (): void {
+        file_put_contents($this->project.'/wp-includes/l10n.php', "<?php\nfunction __wp( \$text, \$domain = 'default' ) {}\n");
+
+        expect(corePatchCheck($this->project, true)->run(RunContext::Console)->status->value)->toBe('ok');
+    });
+});
+
+describe('Composer patches lock', function (): void {
+    // The WordPress core patch is declared by the project (root composer.json,
+    // local patch file), not by the framework: there is nothing to compare.
+    it('passes when the framework declares no patch', function (): void {
+        expect((new PatchesLockCheck)->run(RunContext::Console)->status->value)->toBe('ok');
+    });
+});
+
+describe('Environment file', function (): void {
+    it('fails on a Bedrock name Meatpress does not read', function (): void {
+        file_put_contents($this->project.'/.env', "APP_URL=https://site.test\nDB_NAME=site\nDB_USERNAME=db\n");
+
+        $result = (new EnvironmentFileCheck)->run(RunContext::Console);
+
+        expect($result->status->value)->toBe('error')
+            ->and($result->details)->toContain('DB_NAME is not read: Meatpress reads DB_DATABASE');
+    });
+
+    it('fails when MySQL settings sit on a sqlite connection', function (): void {
+        config(['database.default' => 'sqlite']);
+        file_put_contents($this->project.'/.env', "DB_HOST=db\nDB_DATABASE=db\n");
+
+        expect((new EnvironmentFileCheck)->run(RunContext::Console)->details)
+            ->toContain('DB_HOST is set, but the connection is sqlite: DB_CONNECTION is missing or not mysql');
+    });
+
+    it('warns when WP_HOME disagrees with the APP_URL in use', function (): void {
+        config(['database.default' => 'mysql']);
+        file_put_contents($this->project.'/.env', "APP_URL=https://site.test\nWP_HOME=https://old.test\n");
+
+        expect((new EnvironmentFileCheck)->run(RunContext::Console)->status->value)->toBe('warning');
+    });
+
+    it("passes Laravel's names", function (): void {
+        config(['database.default' => 'mysql']);
+        file_put_contents($this->project.'/.env', "APP_URL=https://site.test\nDB_CONNECTION=mysql\nDB_HOST=db\nDB_DATABASE=db\nDB_USERNAME=db\n");
+
+        expect((new EnvironmentFileCheck)->run(RunContext::Console)->status->value)->toBe('ok');
+    });
+});
+
+describe('Application URL', function (): void {
+    it('warns when APP_URL has no scheme, and says what Meatpress reads', function (): void {
+        config(['app.url' => 'meatpress.test']);
+
+        $result = (new AppUrlCheck)->run(RunContext::Console);
+
+        expect($result->status->value)->toBe('warning')
+            ->and($result->details)->toContain('Meatpress reads it as http://meatpress.test')
+            ->and($result->fix)->toContain('APP_URL=http://meatpress.test');
+    });
+
+    it('passes a URL with a scheme, and a port', function (string $url): void {
+        config(['app.url' => $url]);
+
+        expect((new AppUrlCheck)->run(RunContext::Console)->status->value)->toBe('ok');
+    })->with(['https://meatpress.test', 'http://localhost:8000']);
+
+    it('is skipped without an APP_URL', function (): void {
+        config(['app.url' => '']);
+
+        expect((new AppUrlCheck)->run(RunContext::Console)->status->value)->toBe('skipped');
+    });
+});
+
+describe('Document root', function (): void {
+    it('is an error when .env is served, the folder exposed being the project', function (): void {
+        config(['app.url' => 'http://meatpress.test']);
+        Http::fake(['meatpress.test/.env' => Http::response("APP_NAME=Meatpress\nAPP_KEY=base64:abc\n")]);
+
+        $result = (new PublicRootCheck)->run(RunContext::Http);
+
+        expect($result->status->value)->toBe('error')
+            ->and($result->fix)->toContain('public/');
+    });
+
+    it('passes when .env is not served, or when a catch-all page answers 200 without it', function (int $status, string $body): void {
+        config(['app.url' => 'http://meatpress.test']);
+        Http::fake(['meatpress.test/.env' => Http::response($body, $status)]);
+
+        expect((new PublicRootCheck)->run(RunContext::Http)->status->value)->toBe('ok');
+    })->with([[404, 'Not found'], [200, '<html>home</html>']]);
+
+    it('is skipped when the site cannot request itself', function (): void {
+        config(['app.url' => 'http://meatpress.test']);
+        Http::fake(fn (): never => throw new RuntimeException('timeout'));
+
+        expect((new PublicRootCheck)->run(RunContext::Http)->status->value)->toBe('skipped');
+    });
+
+    it('is skipped without an APP_URL', function (): void {
+        config(['app.url' => '']);
+
+        expect((new PublicRootCheck)->run(RunContext::Http)->status->value)->toBe('skipped');
+    });
+});
+
+describe('Discovery cache', function (): void {
+    function discoveryCheck(bool $cacheEnabled, array $missing): DiscoveryCacheCheck
+    {
+        $location = Mockery::mock(DiscoveryLocationInterface::class);
+        $manager = Mockery::mock(DiscoveryManager::class);
+        $manager->shouldReceive('getLocations')->andReturn(collect([$location]));
+        $cache = Mockery::mock(DiscoveryCacheManager::class);
+        $cache->shouldReceive('isCacheEnabled')->andReturn($cacheEnabled);
+        $cache->shouldReceive('classesMissingFromCache')->with($location)->andReturn($missing);
+
+        return new DiscoveryCacheCheck($manager, $cache);
+    }
+
+    it('fails when classes on disk are missing from the cache, and names them', function (): void {
+        $result = discoveryCheck(true, ['App\\Hooks\\NewAction'])->run(RunContext::Console);
+
+        expect($result->status->value)->toBe('error')
+            ->and($result->details)->toBe(['App\\Hooks\\NewAction'])
+            ->and($result->fix)->toBe('php artisan discovery:clear');
+    });
+
+    it('passes when the cache is off', function (): void {
+        expect(discoveryCheck(false, ['App\\Anything'])->run(RunContext::Console)->status->value)->toBe('ok');
+    });
+});
+
+describe('DiscoveryCacheManager::classesMissingFromCache()', function (): void {
+    /** A cache driver holding what a test puts in it. */
+    final class DoctorArrayDiscoverCacheDriver implements DiscoverCacheDriver
+    {
+        /** @var array<string, array<mixed>> */
+        public static array $entries = [];
+
+        public function has(string $id): bool
+        {
+            return array_key_exists($id, self::$entries);
+        }
+
+        public function get(string $id): array
+        {
+            return self::$entries[$id];
+        }
+
+        public function put(string $id, array $discovered): void
+        {
+            self::$entries[$id] = $discovered;
+        }
+
+        public function forget(string $id): void
+        {
+            unset(self::$entries[$id]);
+        }
+    }
+
+    function cacheManager(bool $debug): DiscoveryCacheManager
+    {
+        config(['structure-discoverer.cache.driver' => DoctorArrayDiscoverCacheDriver::class]);
+        $detector = Mockery::mock(DebugDetectorInterface::class);
+        $detector->shouldReceive('isDebugMode')->andReturn($debug);
+
+        return (new LaravelDiscoveryCacheManagerFactory(app(), $detector))->make();
+    }
+
+    beforeEach(function (): void {
+        DoctorArrayDiscoverCacheDriver::$entries = [];
+        putFile($this->project.'/app/Hooks/NewAction.php', "<?php\nnamespace DoctorFixture\\Hooks;\nfinal class NewAction {}\n");
+        $this->location = new DiscoveryLocation('DoctorFixture\\', $this->project.'/app');
+    });
+
+    it('names a class on disk that the cached entry lacks', function (): void {
+        DoctorArrayDiscoverCacheDriver::$entries['discovery_'.md5($this->location->getPath())] = [];
+
+        expect(cacheManager(debug: false)->classesMissingFromCache($this->location))->toBe(['DoctorFixture\\Hooks\\NewAction']);
+    });
+
+    it('has nothing to compare when the location was never cached, or in debug mode', function (): void {
+        expect(cacheManager(debug: false)->classesMissingFromCache($this->location))->toBeNull()
+            ->and(cacheManager(debug: true)->classesMissingFromCache($this->location))->toBeNull();
+    });
+});

@@ -1,0 +1,122 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Colt\Laravel\Auth;
+
+use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Auth\UserProvider;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Arr;
+use Meatpress\Colt\Model\User;
+use Meatpress\Colt\Services\PasswordService;
+
+/**
+ * Class AuthUserProvider
+ */
+class AuthUserProvider implements UserProvider
+{
+    /**
+     * @var array
+     */
+    protected $config = [];
+
+    public function __construct(array $config = [])
+    {
+        $this->config = $config;
+    }
+
+    /**
+     * Retrieve a user by their unique identifier.
+     *
+     * @param  mixed  $identifier
+     * @return Authenticatable|null
+     */
+    public function retrieveById($identifier)
+    {
+        return $this->createModel()
+            ->newQuery()
+            ->where('ID', $identifier)
+            ->first();
+    }
+
+    /**
+     * Retrieve a user by their unique identifier and "remember me" token.
+     *
+     * @param  mixed  $identifier
+     * @param  string  $token
+     * @return Authenticatable|null
+     */
+    public function retrieveByToken($identifier, $token)
+    {
+        return $this->createModel()
+            ->newQuery()
+            ->where('ID', $identifier)
+            ->hasMeta('remember_token', $token)
+            ->first();
+    }
+
+    /**
+     * Update the "remember me" token for the given user in storage.
+     *
+     * @param  Model&Authenticatable  $user
+     * @param  string  $token
+     */
+    public function updateRememberToken(Authenticatable $user, $token)
+    {
+        $user->setRememberToken($token);
+        $user->save();
+    }
+
+    /**
+     * Retrieve a user by the given credentials.
+     *
+     * @return Authenticatable|null
+     */
+    public function retrieveByCredentials(array $credentials)
+    {
+        $query = $this->createModel()->newQuery();
+
+        if ($username = Arr::get($credentials, 'username')) {
+            return $query->where('user_login', $username)
+                ->first();
+        }
+
+        if ($email = Arr::get($credentials, 'email')) {
+            return $query->where('user_email', $email)
+                ->first();
+        }
+
+        return null;
+    }
+
+    /**
+     * Validate a user against the given credentials.
+     */
+    public function validateCredentials(Authenticatable $user, array $credentials): bool
+    {
+        if (! isset($credentials['password'])) {
+            return false;
+        }
+
+        return (new PasswordService)
+            ->check($credentials['password'], $user->user_pass);
+    }
+
+    public function rehashPasswordIfRequired(Authenticatable $user, array $credentials, bool $force = false)
+    {
+        //
+    }
+
+    /**
+     * Create a new instance of the model.
+     *
+     * @return Model
+     */
+    protected function createModel(): object
+    {
+        $model = Arr::get($this->config, 'model');
+
+        return $model ? new $model : new User;
+    }
+}

@@ -1,0 +1,129 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Services\WordPress\Installation\DTO;
+
+use Illuminate\Support\Str;
+use Meatpress\Services\WordPress\Installation\LanguageService;
+
+use function Laravel\Prompts\confirm;
+use function Laravel\Prompts\password;
+use function Laravel\Prompts\text;
+
+/**
+ * Data Transfer Object for WordPress installation configuration.
+ *
+ * This class encapsulates WordPress site configuration parameters and provides
+ * factory methods for creating configurations from interactive prompts.
+ */
+class InstallationConfig
+{
+    /**
+     * Create a new installation configuration instance.
+     *
+     * @param  string  $title  Site title
+     * @param  string  $description  Site description
+     * @param  string  $adminUser  Admin username
+     * @param  string  $adminEmail  Admin email address
+     * @param  string  $adminPassword  Admin password
+     * @param  string  $locale  Site language locale
+     * @param  bool  $isPublic  Whether site should be indexed by search engines
+     */
+    public function __construct(
+        public readonly string $title,
+        public readonly string $description,
+        public readonly string $adminUser,
+        public readonly string $adminEmail,
+        public readonly string $adminPassword,
+        public readonly string $locale,
+        public readonly bool $isPublic,
+    ) {}
+
+    /**
+     * Create configuration from interactive prompts.
+     *
+     * Prompts user for WordPress installation settings with validation.
+     * Includes:
+     * - Site information (title, description)
+     * - Admin account details
+     * - Language preferences
+     * - Search engine visibility
+     *
+     * @throws \RuntimeException If user input validation fails
+     */
+    public static function fromPrompts(
+        ?string $title = null,
+        ?string $description = null,
+        ?string $adminUser = null,
+        ?string $adminEmail = null,
+        ?string $adminPassword = null,
+        ?string $locale = null,
+        ?bool $isPublic = null,
+    ): self {
+        return new self(
+            title: $title ?? text(
+                label: 'Site title?',
+                required: 'Site title is required'
+            ),
+            description: $description ?? text(
+                label: 'Site description?'
+            ),
+            adminUser: $adminUser ?? text(
+                label: 'Admin username?',
+                required: 'Admin username is required'
+            ),
+            adminEmail: $adminEmail ?? text(
+                label: 'Admin email?',
+                required: 'Admin email is required',
+                validate: fn (string $value): ?string => filter_var($value, FILTER_VALIDATE_EMAIL) ? null : 'Invalid email address'
+            ),
+            adminPassword: $adminPassword ?? password(
+                label: 'Admin password?',
+                required: 'Admin password is required',
+                validate: fn (string $value): ?string => strlen($value) < 8 ? 'Password must be at least 8 characters' : null
+            ),
+            locale: $locale ?? (new LanguageService)->promptForLanguage(),
+            isPublic: $isPublic ?? confirm(
+                label: 'Allow search engine indexing?'
+            ),
+        );
+    }
+
+    /**
+     * Create configuration for an install that cannot prompt.
+     *
+     * Without a terminal — `--no-interaction`, CI, or `meatpress new` driving the
+     * command — prompts cannot be answered, and a required one used to abort the
+     * install on "Site title is required". Every option given is kept; the rest
+     * gets a value that makes a working local site: the project's name as
+     * title, `admin` on the site's own domain, a generated password, `en_US`,
+     * not indexed.
+     *
+     * @param  string  $projectName  The project's name, for the title
+     * @param  string|null  $siteUrl  The application URL, for the admin email domain
+     */
+    public static function withDefaults(
+        string $projectName,
+        ?string $siteUrl,
+        ?string $title = null,
+        ?string $description = null,
+        ?string $adminUser = null,
+        ?string $adminEmail = null,
+        ?string $adminPassword = null,
+        ?string $locale = null,
+        ?bool $isPublic = null,
+    ): self {
+        $host = is_string($siteUrl) ? parse_url($siteUrl, PHP_URL_HOST) : null;
+
+        return new self(
+            title: $title ?? Str::headline($projectName),
+            description: $description ?? '',
+            adminUser: $adminUser ?? 'admin',
+            adminEmail: $adminEmail ?? 'admin@'.(is_string($host) && str_contains($host, '.') ? $host : 'example.com'),
+            adminPassword: $adminPassword ?? Str::password(20, symbols: false),
+            locale: $locale ?? 'en_US',
+            isPublic: $isPublic ?? false,
+        );
+    }
+}

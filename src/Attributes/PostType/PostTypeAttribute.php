@@ -1,0 +1,55 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Attributes\PostType;
+
+use Meatpress\Attributes\Attributable;
+use Meatpress\Attributes\Contracts\ConfiguresArguments;
+use Meatpress\Attributes\Contracts\HandlesAttributes;
+use Meatpress\PostType\Domain\Contracts\PostTypeAttributeInterface;
+use ReflectionClass;
+use ReflectionMethod;
+
+/**
+ * Base attribute for post type configuration.
+ *
+ * This attribute serves as the base for all post type configuration attributes.
+ * It provides common functionality for handling post type registration arguments.
+ *
+ * @deprecated since 13.36, removed in 15.0. Implement
+ *             {@see ConfiguresArguments}, as the
+ *             built-in attributes now do.
+ */
+abstract class PostTypeAttribute implements HandlesAttributes
+{
+    /**
+     * Handle the attribute processing.
+     *
+     * This method is called by discovery services when processing attributes
+     * on a class. It validates that the class implements the PostType interface
+     * and then calls the configure method.
+     *
+     * @param  Attributable  $instance  The instance being processed
+     * @param  ReflectionClass|ReflectionMethod  $context  The reflection class of the instance
+     * @param  object  $attribute  The attribute instance
+     */
+    public function handle($container, Attributable $instance, ReflectionClass|ReflectionMethod $context, object $attribute): void
+    {
+        if (! $instance instanceof PostTypeAttributeInterface) {
+            return;
+        }
+
+        $this->configure($instance);
+    }
+
+    /**
+     * Configure the post type instance with this attribute.
+     *
+     * This method should be implemented by child classes to set specific
+     * configuration options on the post type instance.
+     *
+     * @param  PostTypeAttributeInterface  $postType  The post type instance to configure
+     */
+    abstract protected function configure(PostTypeAttributeInterface $postType): void;
+}

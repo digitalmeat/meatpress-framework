@@ -1,0 +1,473 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Taxonomy\Infrastructure\Services;
+
+use Illuminate\Support\Str;
+use Meatpress\Attributes\Contracts\ConfiguresArguments;
+use Meatpress\Attributes\Contracts\ConfiguresArgumentsWithMethod;
+use Meatpress\Attributes\Contracts\HandlesAttributes;
+use Meatpress\Attributes\Taxonomy;
+use Meatpress\Discovery\Domain\Contracts\ConfigurableDiscoveryInterface;
+use Meatpress\Discovery\Domain\Contracts\DiscoveryInterface;
+use Meatpress\Discovery\Domain\Contracts\DiscoveryLocationInterface;
+use Meatpress\Discovery\Domain\Contracts\ReflectionCacheInterface;
+use Meatpress\Discovery\Domain\Services\HasConfiguringSupport;
+use Meatpress\Discovery\Domain\Services\HasInstancePool;
+use Meatpress\Discovery\Domain\Services\IsDiscovery;
+use Meatpress\Entity\Adapter\Out\WordPress\TaxonomyRegistryAdapter;
+use Meatpress\Entity\Domain\Model\Taxonomy as EntityTaxonomy;
+use Meatpress\Taxonomy\Domain\Contracts\TaxonomyServiceInterface;
+use Psr\Log\LoggerInterface;
+use ReflectionClass;
+use ReflectionMethod;
+use Spatie\StructureDiscoverer\Data\DiscoveredClass;
+use Spatie\StructureDiscoverer\Data\DiscoveredStructure;
+
+/**
+ * Taxonomy Discovery Service
+ *
+ * Discovers classes decorated with Taxonomy attributes and registers them as custom taxonomies.
+ * This discovery class scans for classes that have the #[Taxonomy] attribute and processes
+ * all related sub-attributes to build a complete taxonomy configuration.
+ *
+ * Handles both class-level attributes (like Hierarchical, PublicTaxonomy, ShowUI) and method-level
+ * attributes (like MetaBoxCb, UpdateCountCallback) by aggregating all configuration into a
+ * complete WordPress taxonomy registration.
+ */
+final class TaxonomyDiscovery implements ConfigurableDiscoveryInterface, DiscoveryInterface
+{
+    use HasConfiguringSupport;
+    use HasInstancePool;
+    use IsDiscovery;
+
+    /**
+     * Create a new Taxonomy discovery
+     *
+     * @param  TaxonomyServiceInterface  $taxonomyService  The taxonomy service for registration
+     */
+    public function __construct(
+        private readonly TaxonomyServiceInterface $taxonomyService,
+        private readonly ?LoggerInterface $logger = null
+    ) {}
+
+    /**
+     * {@inheritDoc}
+     */
+    public function createEntityForConfiguring(string $slug, ?string $singular = null, ?string $plural = null, array $args = [], int $priority = 5): EntityTaxonomy
+    {
+        // Generate singular name if not provided
+        $singular ??= $this->generateSingular($slug, null);
+
+        // Generate plural name if not provided
+        $plural ??= Str::plural($singular);
+
+        // Extract object type from args, default to ['post']
+        $objectType = $args['object_type'] ?? ['post'];
+        unset($args['object_type']);
+
+        // Create the Entity Taxonomy instance directly without auto-registration
+        $taxonomy = new EntityTaxonomy($slug, $objectType, $singular, $plural);
+        $taxonomy->init();
+        $taxonomy->priority($priority);
+
+        // Apply additional arguments if provided
+        if ($args !== []) {
+            $taxonomy->setRawArgs($args);
+        }
+
+        return $taxonomy;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * Discovers classes with Taxonomy attributes and collects them for registration.
+     * Only processes classes that have the Taxonomy attribute and are instantiable.
+     */
+    public function discover(DiscoveryLocationInterface $location, DiscoveredStructure $structure, ?ReflectionCacheInterface $reflectionCache = null): void
+    {
+        // Only process classes
+        if (! $structure instanceof DiscoveredClass) {
+            return;
+        }
+
+        // Check if class has Taxonomy attribute
+        $taxonomyAttribute = null;
+        foreach ($structure->attributes as $attribute) {
+            if ($attribute->class === Taxonomy::class) {
+                $taxonomyAttribute = $attribute;
+                break;
+            }
+        }
+
+        if ($taxonomyAttribute === null) {
+            return;
+        }
+
+        // Skip abstract classes
+        if ($structure->isAbstract) {
+            return;
+        }
+
+        // Collect the class for registration
+        $this->getItems()->add($location, [
+            'class' => $structure->namespace.'\\'.$structure->name,
+            'attribute' => $taxonomyAttribute,
+            'structure' => $structure,
+            'reflection_cache' => $reflectionCache,
+        ]);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * Applies discovered Taxonomy classes by processing all their attributes and
+     * registering them as complete WordPress custom taxonomies. This includes
+     * aggregating class-level and method-level attributes into a unified configuration.
+     */
+    public function apply(): void
+    {
+        foreach ($this->getItems() as $discoveredItem) {
+            [
+                'class' => $className,
+                'attribute' => $taxonomyAttribute,
+                'structure' => $structure
+            ] = $discoveredItem;
+
+            try {
+                // Process the complete taxonomy configuration
+                $reflectionCache = $discoveredItem['reflection_cache'] ?? null;
+                $this->processTaxonomy($className, $reflectionCache);
+            } catch (\Throwable $e) {
+                // Log the error but continue with other taxonomies
+                $this->logger?->error(sprintf('Failed to register Taxonomy from class %s', $className), ['exception' => $e]);
+            }
+        }
+    }
+
+    /**
+     * Process a complete taxonomy configuration from its class and attributes.
+     *
+     * This method handles the entire taxonomy registration process by:
+     * 1. Processing the main Taxonomy attribute for basic configuration
+     * 2. Aggregating all class-level sub-attributes
+     * 3. Processing method-level attributes for callbacks
+     * 4. Registering the final taxonomy through the service
+     *
+     * @param  string  $className  The fully qualified class name
+     * @param  ReflectionCacheInterface|null  $reflectionCache  Optional reflection cache
+     */
+    private function processTaxonomy(string $className, ?ReflectionCacheInterface $reflectionCache = null): void
+    {
+        try {
+            $reflectionClass = $reflectionCache->getClassReflection($className);
+            $taxonomyAttributes = $reflectionCache->getClassAttributes($className, Taxonomy::class);
+
+            if ($taxonomyAttributes === []) {
+                return;
+            }
+
+            // Get the Taxonomy attribute instance using reflection
+            /** @var Taxonomy $taxonomy */
+            $taxonomy = $taxonomyAttributes[0]->newInstance();
+
+            // Build base taxonomy configuration using the new configuration class
+            $config = $this->buildBaseConfiguration($className, $taxonomy);
+
+            // Process class-level attributes
+            $config = $this->processClassLevelAttributes($reflectionClass, $className, $config);
+
+            // Process method-level attributes
+            $config = $this->processMethodLevelAttributes($className, $config, $reflectionCache);
+
+            // Get additional arguments from the class instance if it has a withArgs method
+            $this->processAdditionalArgs($className, $config, $reflectionCache);
+
+            // Call configuring method if present and use the configured entity
+            $configuredEntity = $this->processConfiguring(
+                $className,
+                $config->getSlug(),
+                $config->getName(),
+                $config->getPluralName(),
+                ['object_type' => $config->getObjectType()], // Pass only object_type initially, we'll apply attribute configs after
+                $config->getPriority(),
+                $reflectionCache
+            );
+
+            // If configuring was called and returned an entity, apply attribute configurations and register
+            if ($configuredEntity !== null) {
+                $this->applySmartMerge($configuredEntity, $config->getArgs());
+                $this->registerEntity($configuredEntity, TaxonomyRegistryAdapter::class);
+            } else {
+                // Register the taxonomy using the original service
+                $this->taxonomyService->register(
+                    $config->getSlug(),
+                    $config->getObjectType(),
+                    $config->getName(),
+                    $config->getPluralName(),
+                    $config->getArgs(),
+                    $config->getPriority()
+                );
+            }
+
+        } catch (\Throwable $throwable) {
+            $this->logger?->error(sprintf('Failed to process Taxonomy for class %s', $className), ['exception' => $throwable]);
+        }
+    }
+
+    /**
+     * Build the base configuration from the main Taxonomy attribute.
+     *
+     * Extracts slug, singular name, plural name, and object type from the Taxonomy attribute,
+     * applying auto-generation logic when values are not explicitly provided.
+     *
+     * @param  string  $className  The class name for auto-generation
+     * @param  Taxonomy  $taxonomy  The Taxonomy attribute instance
+     * @return TaxonomyConfiguration The base configuration
+     */
+    private function buildBaseConfiguration(string $className, Taxonomy $taxonomy): TaxonomyConfiguration
+    {
+        $slug = $taxonomy->resolveSlug($className);
+        $singular = $this->generateSingular($className, $taxonomy->singular);
+        $plural = $this->generatePlural($taxonomy->plural, $singular);
+        $objectType = $taxonomy->objectType ?? ['post'];
+        $textDomain = $taxonomy->textDomain ?? 'meatpress';
+
+        $initialArgs = [
+            'labels' => $this->generateLabels($singular, $plural, $textDomain),
+            'text_domain' => $textDomain,
+        ];
+
+        return new TaxonomyConfiguration($slug, $singular, $plural, $objectType, $initialArgs);
+    }
+
+    /**
+     * Process all class-level attributes to build taxonomy arguments.
+     *
+     * Scans the class for all known Taxonomy sub-attributes and processes them
+     * to build the complete arguments array for WordPress taxonomy registration.
+     *
+     * @param  ReflectionClass  $reflectionClass  The reflection class
+     * @param  string  $className  The class name to process
+     * @param  TaxonomyConfiguration  $config  The current configuration
+     * @return TaxonomyConfiguration The updated configuration
+     */
+    private function processClassLevelAttributes(ReflectionClass $reflectionClass, string $className, TaxonomyConfiguration $config): TaxonomyConfiguration
+    {
+        try {
+            foreach ($reflectionClass->getAttributes() as $attribute) {
+                if (str_contains($attribute->getName(), 'Meatpress\\Attributes\\Taxonomy\\')) {
+                    $this->processClassAttribute($reflectionClass, $attribute, $config);
+                }
+            }
+        } catch (\Throwable $throwable) {
+            $this->logger?->error(sprintf('Failed to process class-level attributes for %s', $className), ['exception' => $throwable]);
+        }
+
+        return $config;
+    }
+
+    /**
+     * Process method-level attributes to build callback configurations.
+     *
+     * Scans all public methods of the class for method-level attributes like
+     * MetaBoxCb and UpdateCountCallback, building the appropriate callback configurations.
+     *
+     * @param  string  $className  The class name to process
+     * @param  TaxonomyConfiguration  $config  The current configuration
+     * @param  ReflectionCacheInterface|null  $reflectionCache  Optional reflection cache
+     * @return TaxonomyConfiguration The updated configuration
+     */
+    private function processMethodLevelAttributes(string $className, TaxonomyConfiguration $config, ?ReflectionCacheInterface $reflectionCache = null): TaxonomyConfiguration
+    {
+        try {
+            foreach ($reflectionCache->getPublicMethods($className) as $method) {
+                foreach ($method->getAttributes() as $attribute) {
+                    // Process all method-level attributes that have a handle method
+                    $this->processMethodAttribute($method, $attribute, $config);
+                }
+            }
+        } catch (\Throwable $throwable) {
+            $this->logger?->error(sprintf('Failed to process method-level attributes for %s', $className), ['exception' => $throwable]);
+        }
+
+        return $config;
+    }
+
+    /**
+     * Process a single class-level attribute.
+     *
+     * Takes an attribute instance and applies its configuration to the taxonomy args.
+     * Uses the attribute class name to determine the appropriate processing logic.
+     *
+     * @param  ReflectionClass  $reflectionClass  The reflection class
+     * @param  \ReflectionAttribute  $attribute  The attribute to process
+     * @param  TaxonomyConfiguration  $config  The current configuration
+     */
+    private function processClassAttribute(ReflectionClass $reflectionClass, \ReflectionAttribute $attribute, TaxonomyConfiguration $config): void
+    {
+        $attributeInstance = $attribute->newInstance();
+
+        if ($attributeInstance instanceof ConfiguresArguments) {
+            $config->replaceArgs($attributeInstance->configureArguments($config->withArgs()));
+
+            return;
+        }
+
+        if ($attributeInstance instanceof HandlesAttributes) {
+            $attributeInstance->handle(app(), $config, $reflectionClass, $attributeInstance);
+        }
+    }
+
+    /**
+     * Process a single method-level attribute.
+     *
+     * Handles method-level attributes like MetaBoxCb and UpdateCountCallback by
+     * creating appropriate callback configurations.
+     *
+     * @param  ReflectionMethod  $method  The method with the attribute
+     * @param  \ReflectionAttribute  $attribute  The attribute to process
+     * @param  TaxonomyConfiguration  $config  The current configuration
+     */
+    private function processMethodAttribute(
+        ReflectionMethod $method,
+        \ReflectionAttribute $attribute,
+        TaxonomyConfiguration $config
+    ): void {
+        $attributeInstance = $attribute->newInstance();
+
+        if ($attributeInstance instanceof ConfiguresArgumentsWithMethod) {
+            $config->replaceArgs($attributeInstance->configureArguments($config->withArgs(), [new $method->class, $method->getName()]));
+
+            return;
+        }
+
+        if ($attributeInstance instanceof HandlesAttributes) {
+            $attributeInstance->handle(app(), $config, $method, $attributeInstance);
+        }
+    }
+
+    /**
+     * Process additional arguments from the class instance.
+     *
+     * If the class has a withArgs method, it will be called to get additional
+     * arguments that should be merged into the taxonomy configuration.
+     *
+     * @param  string  $className  The class name to process
+     * @param  TaxonomyConfiguration  $config  The current configuration
+     * @param  ReflectionCacheInterface|null  $reflectionCache  Optional reflection cache
+     */
+    private function processAdditionalArgs(string $className, TaxonomyConfiguration $config, ?ReflectionCacheInterface $reflectionCache = null): void
+    {
+        try {
+            $reflectionClass = $reflectionCache->getClassReflection($className);
+
+            if ($reflectionClass->isInstantiable()) {
+                // Use instance pool if available, otherwise create directly
+                $instance = $this->getInstanceFromPool($className, fn (): object => $reflectionClass->newInstance());
+
+                // Check if the instance has a withArgs method
+                if (method_exists($instance, 'withArgs')) {
+                    $additionalArgs = $instance->withArgs();
+
+                    if (is_array($additionalArgs) && $additionalArgs !== []) {
+                        $config->mergeArgs($additionalArgs);
+                    }
+                }
+            }
+        } catch (\Throwable $throwable) {
+            // Log the error but continue - additional args are optional
+            $this->logger?->error(sprintf('Failed to process additional args for %s', $className), ['exception' => $throwable]);
+        }
+    }
+
+    /**
+     * Generate a singular name from class name and attribute value.
+     *
+     * @param  string  $className  The class name
+     * @param  string|null  $attributeSingular  The singular name from the attribute
+     * @return string The generated singular name
+     */
+    private function generateSingular(string $className, ?string $attributeSingular): string
+    {
+        if ($attributeSingular !== null) {
+            return $attributeSingular;
+        }
+
+        $baseName = class_basename($className);
+        $snakeCase = Str::snake($baseName);
+        $humanized = ucfirst(str_replace('_', ' ', $snakeCase));
+
+        return Str::singular($humanized);
+    }
+
+    /**
+     * Generate a plural name from singular name and attribute value.
+     *
+     * @param  string|null  $attributePlural  The plural name from the attribute
+     * @param  string  $singular  The singular name
+     * @return string The generated plural name
+     */
+    private function generatePlural(?string $attributePlural, string $singular): string
+    {
+        if ($attributePlural !== null) {
+            return $attributePlural;
+        }
+
+        return Str::plural($singular);
+    }
+
+    /**
+     * Generate WordPress labels array from singular and plural names.
+     *
+     * @param  string  $singular  The singular name
+     * @param  string  $plural  The plural name
+     * @return array<string, string> The labels array
+     */
+    private function generateLabels(string $singular, string $plural, string $textDomain = 'meatpress'): array
+    {
+        return [
+            'name' => $plural,
+            'singular_name' => $singular,
+            'menu_name' => $plural,
+            /* translators: %s: taxonomy general name (plural) */
+            'all_items' => sprintf(__('All %s', $textDomain), $plural),
+            /* translators: %s: taxonomy singular name */
+            'edit_item' => sprintf(__('Edit %s', $textDomain), $singular),
+            /* translators: %s: taxonomy singular name */
+            'view_item' => sprintf(__('View %s', $textDomain), $singular),
+            /* translators: %s: taxonomy singular name */
+            'update_item' => sprintf(__('Update %s', $textDomain), $singular),
+            /* translators: %s: taxonomy singular name */
+            'add_new_item' => sprintf(__('Add New %s', $textDomain), $singular),
+            /* translators: %s: taxonomy singular name */
+            'new_item_name' => sprintf(__('New %s Name', $textDomain), $singular),
+            /* translators: %s: taxonomy general name (plural) */
+            'search_items' => sprintf(__('Search %s', $textDomain), $plural),
+            /* translators: %s: taxonomy general name (plural) */
+            'popular_items' => sprintf(__('Popular %s', $textDomain), $plural),
+            /* translators: %s: taxonomy general name (plural) */
+            'separate_items_with_commas' => sprintf(__('Separate %s with commas', $textDomain), $plural),
+            /* translators: %s: taxonomy general name (plural) */
+            'add_or_remove_items' => sprintf(__('Add or remove %s', $textDomain), $plural),
+            /* translators: %s: taxonomy general name (plural) */
+            'choose_from_most_used' => sprintf(__('Choose from the most used %s', $textDomain), $plural),
+            /* translators: %s: taxonomy general name (plural) */
+            'not_found' => sprintf(__('No %s found', $textDomain), $plural),
+            /* translators: %s: taxonomy singular name */
+            'parent_item' => sprintf(__('Parent %s', $textDomain), $singular),
+            /* translators: %s: taxonomy singular name */
+            'parent_item_colon' => sprintf(__('Parent %s:', $textDomain), $singular),
+        ];
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function getIdentifier(): string
+    {
+        return 'taxonomies';
+    }
+}

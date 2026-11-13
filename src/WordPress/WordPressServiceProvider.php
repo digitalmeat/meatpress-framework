@@ -1,0 +1,108 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\WordPress;
+
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\URL;
+use Illuminate\Support\ServiceProvider;
+use Meatpress\Application\Application\Services\ConsoleDetectionService;
+use Meatpress\Hook\Domain\Contract\Action;
+use Meatpress\Services\WordPress\Installation\DatabaseService;
+use Meatpress\Services\WordPress\Installation\InstallationService;
+use Meatpress\Services\WordPress\Installation\LanguageService;
+use Meatpress\Services\WordPress\Installation\WordPressInstallLoaderService;
+use Meatpress\WordPress\Commands\LaunchPadInstallCommand;
+use Meatpress\WordPress\Commands\LaunchPadSetupCommand;
+
+class WordPressServiceProvider extends ServiceProvider
+{
+    protected Bootstrap $bootstrap;
+
+    protected ConsoleDetectionService $consoleDetectionService;
+
+    public function __construct($app, ?ConsoleDetectionService $consoleDetectionService = null)
+    {
+        parent::__construct($app);
+        $this->consoleDetectionService = $consoleDetectionService ?? resolve(ConsoleDetectionService::class);
+    }
+
+    /**
+     * Register services.
+     */
+    public function register(): void
+    {
+        $this->mergeConfigFrom(
+            __DIR__.'/../../config/wordpress.php', 'wordpress'
+        );
+
+        $this->app->singleton(Bootstrap::class);
+        $this->bootstrap = $this->app->make(Bootstrap::class);
+        $this->bootstrap->register();
+
+        $this->app->singleton(DatabaseService::class);
+        $this->app->singleton(InstallationService::class);
+        $this->app->singleton(LanguageService::class);
+        $this->app->singleton(WordPressInstallLoaderService::class);
+    }
+
+    /**
+     * Bootstrap services.
+     */
+    public function boot(): void
+    {
+        $this->handleHttpsProtocol();
+
+        $this->bootstrap->boot();
+
+        if ($this->consoleDetectionService->isConsole()) {
+            $this->publishes([
+                __DIR__.'/../../config/wordpress.php' => config_path('wordpress.php'),
+            ], 'wordpress');
+
+            $this->commands([
+                LaunchPadSetupCommand::class,
+                LaunchPadInstallCommand::class,
+            ]);
+        } else {
+            /** @var Action $action */
+            $action = $this->app->make(Action::class);
+            $action->add('wp_install', $this->completeWebInstall(...));
+        }
+    }
+
+    /**
+     * Finish what the WordPress web installer leaves undone.
+     *
+     * Runs on `wp_install`, at the end of WordPress's own installation.
+     */
+    public function completeWebInstall(): void
+    {
+        Artisan::call('migrate');
+
+        // The rewrite rules WordPress stores during its own install are
+        // incomplete — taxonomies and post types are not all registered yet —
+        // so categories, tags and date archives answer 404 on a site that
+        // otherwise works. Dropping the option lets WordPress rebuild them on a
+        // later request, once everything is registered; flushing here would just
+        // store the same incomplete set again.
+        if (function_exists('delete_option')) {
+            delete_option('rewrite_rules');
+        }
+    }
+
+    /**
+     * Force HTTPS protocol handling for WordPress requests.
+     *
+     * Proxy header handling (X-Forwarded-Proto) is delegated to Laravel's
+     * TrustProxies middleware which should be configured in the application.
+     */
+    private function handleHttpsProtocol(): void
+    {
+        if (is_secured()) {
+            URL::forceScheme('https');
+            $_SERVER['HTTPS'] = 'on';
+        }
+    }
+}

@@ -1,0 +1,598 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Theme\Infrastructure\Providers;
+
+use Illuminate\Contracts\Debug\ExceptionHandler;
+use Illuminate\Http\Request;
+use Illuminate\Support\ServiceProvider;
+use Meatpress\Collection\Domain\Contracts\CollectionFactoryInterface;
+use Meatpress\Collection\Infrastructure\Providers\CollectionServiceProvider;
+use Meatpress\Config\Domain\Contracts\ConfigRepositoryInterface;
+use Meatpress\Config\Infrastructure\Providers\ConfigServiceProvider;
+use Meatpress\Hook\Domain\Contract\Action;
+use Meatpress\Hook\Domain\Contract\Filter;
+use Meatpress\Modules\Infrastructure\Providers\ModuleServiceProvider;
+use Meatpress\Theme\Application\Services\ThemeManager;
+use Meatpress\Theme\Application\Services\ThemeRegistrar;
+use Meatpress\Theme\Domain\Contracts\ContainerInterface;
+use Meatpress\Theme\Domain\Contracts\ContentUrlResolverInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeAssetUrlResolverInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeFeatureRegistrarInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeJsonResolverInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeRegistrarInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeService;
+use Meatpress\Theme\Domain\Contracts\WordPressThemeInterface;
+use Meatpress\Theme\Domain\Support\ThemeCollection;
+use Meatpress\Theme\Domain\Support\ThemeConfig;
+use Meatpress\Theme\Infrastructure\Adapters\DomainContainerAdapter;
+use Meatpress\Theme\Infrastructure\Models\LaravelThemeModule;
+use Meatpress\Theme\Infrastructure\Repositories\ThemeRepository;
+use Meatpress\Theme\Infrastructure\Services\EditorStyleResolver;
+use Meatpress\Theme\Infrastructure\Services\ThemeAssetFileResolver;
+use Meatpress\Theme\Infrastructure\Services\ThemeAutoloader;
+use Meatpress\Theme\Infrastructure\Services\ThemeJsonResolver;
+use Meatpress\Theme\Infrastructure\Services\ThemeUpdateGuard;
+use Meatpress\Theme\Infrastructure\Services\WordPressContentUrlResolver;
+use Meatpress\Theme\Infrastructure\Services\WordPressThemeAdapter;
+use Meatpress\Theme\Infrastructure\Services\WordPressThemeFeatureRegistrar;
+use Meatpress\Theme\Infrastructure\Services\WordPressThemeParser;
+use Meatpress\Theme\UI\Console\Commands\ThemeActivateCommand;
+use Meatpress\Theme\UI\Console\Commands\ThemeStatusCommand;
+use Meatpress\Theme\UI\Console\MakeThemeCommand;
+use Meatpress\Theme\UI\Console\RemoveThemeCommand;
+use Meatpress\Theme\UI\Http\MissingThemeNotice;
+use Meatpress\Theme\UI\Http\MissingThemePage;
+use Symfony\Component\HttpFoundation\Response;
+use Throwable;
+
+/**
+ * Theme Service Provider with clear separation of concerns.
+ *
+ * This service provider follows hexagonal architecture principles by:
+ * - Registering domain services through interfaces
+ * - Using adapters to bridge domain and infrastructure concerns
+ * - Maintaining clean separation between layers
+ *
+ *
+ * @since   1.0.0
+ */
+class ThemeServiceProvider extends ServiceProvider
+{
+    /**
+     * WordPress filter instance for theme-related hooks.
+     */
+    private Filter $filter;
+
+    /**
+     * Register theme services in the container.
+     *
+     * This method follows a specific order:
+     * 1. Core dependencies (Config, Collection, Modules)
+     * 2. Utility classes initialization
+     * 3. Theme-specific services
+     * 4. Console commands
+     */
+    public function register(): void
+    {
+        $this->registerCoreDependencies();
+        $this->initializeUtilityClasses();
+        $this->registerThemeServices();
+        $this->registerCommands();
+
+    }
+
+    /**
+     * Boot theme services and setup WordPress integration.
+     *
+     * @param  Filter  $filter  WordPress filter instance for hooks
+     */
+    public function boot(Filter $filter): void
+    {
+        $this->filter = $filter;
+        $this->registerThemeDirectories();
+        $this->setupThemeBoot();
+        $this->guideWhenThemeIsMissing();
+        $this->guardAgainstForeignThemeUpdates();
+        $this->registerEditorStyles();
+    }
+
+    /**
+     * Keep wordpress.org from offering updates for the project's own themes.
+     */
+    private function guardAgainstForeignThemeUpdates(): void
+    {
+        $guard = new ThemeUpdateGuard($this->getBaseThemePath());
+
+        $this->filter->add('site_transient_update_themes', $guard->filterUpdates(...));
+    }
+
+    /**
+     * Tell the user how to create a theme when the site has none.
+     *
+     * A site installed through the WordPress web installer never runs
+     * meatpress:install, so it has no theme and every front-end request either
+     * dies on a missing view or answers a bare 404, depending on whether the
+     * skeleton still declares WordPress routes. Both are covered here. Say the
+     * same thing in wp-admin, which is where the user goes to fix it.
+     */
+    private function guideWhenThemeIsMissing(): void
+    {
+        $action = $this->app->make(Action::class);
+        $action->add('admin_notices', [$this->app->make(MissingThemeNotice::class), 'render']);
+
+        if ($this->app->runningInConsole()) {
+            return;
+        }
+
+        $page = $this->app->make(MissingThemePage::class);
+
+        // Take the request over before a template is chosen. This is the path
+        // that matters now: since the skeleton stopped declaring WordPress
+        // routes, the template hierarchy decides, nothing calls view(), and a
+        // site with no theme answers a bare 404 with no exception raised.
+        $action->add('template_redirect', $page->interceptFrontEndRequest(...));
+
+        // Kept for anything still routing through view() — a project's own
+        // routes, or a skeleton older than v13.32.0-beta.3.
+        $handler = $this->app->make(ExceptionHandler::class);
+
+        if (! method_exists($handler, 'renderable')) {
+            return;
+        }
+
+        $handler->renderable(fn (Throwable $e, Request $request): ?Response => $page->handle($e, $request));
+    }
+
+    /**
+     * Register core dependencies required by the theme system.
+     *
+     * Registers external service providers and loads theme configuration.
+     */
+    private function registerCoreDependencies(): void
+    {
+        $providers = [
+            ConfigServiceProvider::class,
+            CollectionServiceProvider::class,
+            ModuleServiceProvider::class,
+        ];
+
+        foreach ($providers as $provider) {
+            $this->app->register($provider);
+        }
+
+        $this->loadThemeConfiguration();
+    }
+
+    /**
+     * Initialize utility classes with their dependencies.
+     *
+     * This must be called early in the register phase to ensure
+     * static utility classes have access to their dependencies.
+     */
+    private function initializeUtilityClasses(): void
+    {
+        $this->initializeThemeConfig();
+        $this->initializeThemeCollection();
+    }
+
+    /**
+     * Initialize ThemeConfig utility with config repository.
+     *
+     * Uses immediate binding if available, or deferred resolution callback.
+     */
+    private function initializeThemeConfig(): void
+    {
+        if ($this->app->bound(ConfigRepositoryInterface::class)) {
+            $config = $this->app->make(ConfigRepositoryInterface::class);
+            ThemeConfig::setRepository($config);
+        } else {
+            $this->app->afterResolving(ConfigRepositoryInterface::class, function (ConfigRepositoryInterface $config): void {
+                ThemeConfig::setRepository($config);
+            });
+        }
+    }
+
+    /**
+     * Initialize ThemeCollection utility with collection factory.
+     *
+     * Uses immediate binding if available, or deferred resolution callback.
+     */
+    private function initializeThemeCollection(): void
+    {
+        if ($this->app->bound(CollectionFactoryInterface::class)) {
+            $factory = $this->app->make(CollectionFactoryInterface::class);
+            ThemeCollection::setFactory($factory);
+        } else {
+            $this->app->afterResolving(CollectionFactoryInterface::class, function (CollectionFactoryInterface $factory): void {
+                ThemeCollection::setFactory($factory);
+            });
+        }
+    }
+
+    /**
+     * Register all theme-specific services.
+     *
+     * Organized into logical groups:
+     * - Core services (Container, Registrar, Autoloader, Manager)
+     * - WordPress-specific services
+     * - Backward compatibility aliases
+     */
+    private function registerThemeServices(): void
+    {
+        $this->registerCoreServices();
+        $this->registerWordPressServices();
+        $this->registerBackwardCompatibility();
+    }
+
+    /**
+     * Register core theme services following hexagonal architecture.
+     *
+     * All services are registered through their domain interfaces
+     * to maintain proper dependency inversion.
+     */
+    private function registerCoreServices(): void
+    {
+        // Domain container adapter - bridges domain and Laravel container
+        $this->app->singleton(ContainerInterface::class, fn ($app): ContainerInterface => $this->createDomainContainer($app));
+
+        // Theme registrar for self-registration pattern
+        $this->app->singleton(ThemeRegistrarInterface::class, fn ($app): ThemeRegistrar => new ThemeRegistrar(
+            $app->make(ContainerInterface::class),
+            $app->make(WordPressThemeParser::class)
+        ));
+
+        // Theme autoloader service
+        $this->app->singleton(ThemeAutoloader::class);
+
+        // Main theme service - implements domain interface
+        $this->app->singleton(ThemeService::class, fn ($app): ThemeManager => new ThemeManager(
+            $app,
+            $app->get('view')->getFinder(),
+            $app->make('translator')->getLoader(),
+            $app->bound('theme.repository') ? $app->make('theme.repository') : null,
+            $app->make(ThemeRegistrarInterface::class)
+        ));
+    }
+
+    /**
+     * Register WordPress-specific services and adapters.
+     *
+     * These services handle the integration with WordPress theme system.
+     */
+    private function registerWordPressServices(): void
+    {
+        // WordPress theme interface adapter
+        $this->app->singleton(WordPressThemeInterface::class, WordPressThemeAdapter::class);
+
+        // Ports the theme components reach WordPress and the asset build through
+        $this->app->singleton(ThemeFeatureRegistrarInterface::class, WordPressThemeFeatureRegistrar::class);
+        $this->app->singleton(ContentUrlResolverInterface::class, WordPressContentUrlResolver::class);
+        $this->app->singleton(ThemeAssetUrlResolverInterface::class, ThemeAssetFileResolver::class);
+
+        // WordPress theme parser
+        $this->app->singleton(WordPressThemeParser::class);
+
+        // Theme JSON resolver - reads built theme.json from Vite output
+        $this->app->singleton(ThemeJsonResolverInterface::class, fn ($app): ThemeJsonResolver => new ThemeJsonResolver(
+            $app->make('path.public')
+        ));
+
+        // Editor styles - reads the theme's built stylesheets from Vite output
+        $this->app->singleton(EditorStyleResolver::class, fn ($app): EditorStyleResolver => new EditorStyleResolver(
+            $app->make('path.public')
+        ));
+
+        // Deprecated theme repository - kept for backward compatibility only
+        $this->app->singleton('theme.repository', fn ($app): ThemeRepository => new ThemeRepository(
+            $app,
+            $app->make(WordPressThemeParser::class),
+            $app->make(CollectionFactoryInterface::class)
+        ));
+    }
+
+    /**
+     * Register backward compatibility aliases and class mappings.
+     *
+     * Ensures existing code continues to work after refactoring.
+     */
+    private function registerBackwardCompatibility(): void
+    {
+        // Legacy service alias
+        $this->app->singleton('theme', fn ($app) => $app->make(ThemeService::class));
+
+        // Legacy class aliases for backward compatibility
+        if (! class_exists('Meatpress\\Modules\\Domain\\Models\\LaravelThemeModule')) {
+            class_alias(LaravelThemeModule::class, 'Meatpress\\Modules\\Domain\\Models\\LaravelThemeModule');
+        }
+
+        if (! class_exists('Meatpress\\Theme\\Domain\\Models\\LaravelThemeModule')) {
+            class_alias(LaravelThemeModule::class, 'Meatpress\\Theme\\Domain\\Models\\LaravelThemeModule');
+        }
+    }
+
+    /**
+     * Register theme directories with WordPress for theme discovery.
+     *
+     * Integrates custom theme paths with WordPress theme system
+     * and sets up necessary WordPress hooks.
+     */
+    private function registerThemeDirectories(): void
+    {
+        $baseThemePath = $this->getBaseThemePath();
+
+        // Fix theme_root when WordPress resolves an incorrect absolute path from the transient
+        $this->filter->add('theme_root', $this->fixThemeRoot(...), PHP_INT_MAX);
+        $this->filter->add('site_transient_theme_roots', $this->handleThemeRootsTransient(...), PHP_INT_MAX);
+
+        if ($this->isValidThemeDirectory($baseThemePath)) {
+            $this->addToGlobalThemeDirectories($baseThemePath);
+        }
+    }
+
+    /**
+     * Handle the site_transient_theme_roots filter.
+     *
+     * Normalizes theme roots by fixing invalid paths and updates
+     * the transient only when necessary.
+     *
+     * @param  array|bool  $roots  Theme roots array from WordPress
+     * @return array Normalized theme roots
+     */
+    private function handleThemeRootsTransient(array|bool $roots): array|bool
+    {
+        if (! $roots) {
+            return $roots;
+        }
+
+        $updatedRoots = $this->normalizeThemeRoots($roots);
+
+        if ($updatedRoots !== $roots) {
+            set_site_transient('theme_roots', $updatedRoots);
+        }
+
+        return $updatedRoots;
+    }
+
+    /**
+     * Normalize theme roots by fixing invalid paths.
+     *
+     * @param  array  $roots  Theme roots array from WordPress
+     * @return array Normalized theme roots
+     */
+    private function normalizeThemeRoots(array $roots): array
+    {
+        $normalizedRoots = [];
+
+        foreach ($roots as $themeSlug => $themePath) {
+            $normalizedRoots[$themeSlug] = $this->resolveThemePath($themePath);
+        }
+
+        return $normalizedRoots;
+    }
+
+    /**
+     * Resolve theme path to a valid directory.
+     *
+     * @param  string  $themePath  Original theme path
+     * @return string Valid theme directory path
+     */
+    private function resolveThemePath(string $themePath): string
+    {
+        // Si c'est un chemin WordPress standard, utiliser le répertoire par défaut
+        if ($this->isWordPressThemePath($themePath)) {
+            return WP_CONTENT_DIR.'/themes';
+        }
+
+        // Sinon, utiliser notre répertoire de base
+        return $this->getBaseThemePath();
+    }
+
+    /**
+     * Check if the theme path is a WordPress standard theme path.
+     *
+     * @param  string  $themePath  Path to check
+     * @return bool True if it's a WordPress theme path
+     */
+    private function isWordPressThemePath(string $themePath): bool
+    {
+        return str_contains($themePath, '/content/themes/');
+    }
+
+    /**
+     * Get the base theme path from configuration.
+     *
+     * Uses ThemeConfig if available, falls back to default path.
+     *
+     * @return string The base theme directory path
+     */
+    private function getBaseThemePath(): string
+    {
+        return base_path('themes');
+
+    }
+
+    /**
+     * Validate if the given path is a valid theme directory.
+     *
+     * @param  string|null  $path  Path to validate
+     * @return bool True if path exists and is a directory
+     */
+    private function isValidThemeDirectory(?string $path): bool
+    {
+        return $path && is_dir($path);
+    }
+
+    /**
+     * Add theme directory to WordPress global theme directories.
+     *
+     * Ensures the directory is not duplicated in the global array.
+     *
+     * @param  string  $path  Theme directory path to add
+     */
+    private function addToGlobalThemeDirectories(string $path): void
+    {
+        $directories = $GLOBALS['wp_theme_directories'] ?? [];
+
+        if (! is_array($directories)) {
+            $directories = [];
+        }
+
+        // get_raw_theme_root() answers a hardcoded '/themes' whenever a single
+        // directory is registered, and wp_get_theme() then resolves that against
+        // WP_CONTENT_DIR — landing outside Meatpress's themes directory. The admin
+        // reported the active theme as missing while the front end rendered it
+        // fine, because get_stylesheet_directory() goes through the theme_root
+        // filter and wp_get_theme() does not.
+        //
+        // Keeping WordPress's own themes directory alongside Meatpress's lifts that
+        // shortcut, so the stylesheet_root option decides instead. wp-settings.php
+        // registers get_theme_root(), which the theme_root filter already points
+        // at Meatpress's directory, so the standard one has to be added here.
+        $standard = defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR.'/themes' : null;
+
+        foreach ([$standard, $path] as $directory) {
+            if ($directory !== null && $directory !== $path && ! is_dir($directory)) {
+                continue;
+            }
+
+            if ($directory !== null && ! in_array($directory, $directories, true)) {
+                $directories[] = $directory;
+            }
+        }
+
+        $GLOBALS['wp_theme_directories'] = $directories;
+    }
+
+    /**
+     * WordPress filter callback to fix theme root resolution.
+     *
+     * Ensures the theme root always points to the correct base theme path,
+     * regardless of stale absolute paths stored in the theme_roots transient.
+     *
+     * @param  string  $themeRoot  Theme root path resolved by WordPress
+     * @return string Corrected theme root path
+     */
+    private function fixThemeRoot(string $themeRoot): string
+    {
+        $baseThemePath = $this->getBaseThemePath();
+
+        if ($themeRoot !== $baseThemePath && ! $this->isWordPressThemePath($themeRoot)) {
+            return $baseThemePath;
+        }
+
+        return $themeRoot;
+    }
+
+    /**
+     * Setup theme boot process and integrations.
+     *
+     * Registers framework integrations. A theme's own Blade directives live in its
+     * resources/directives.php, loaded by ModuleAssetManager::registerModuleBladeDirectives().
+     */
+    private function setupThemeBoot(): void
+    {
+        $this->registerThemeJsonFilter();
+    }
+
+    /**
+     * Register the wp_theme_json_data_theme filter to inject built theme.json data.
+     *
+     * Uses the Vite-built theme.json (which includes Tailwind CSS variables)
+     * instead of relying on a file copy hack in vite.config.js.
+     */
+    private function registerThemeJsonFilter(): void
+    {
+        $this->filter->add('wp_theme_json_data_theme', function ($themeJson) {
+            $themeSlug = get_stylesheet();
+            $resolver = $this->app->make(ThemeJsonResolverInterface::class);
+            $builtData = $resolver->resolve($themeSlug);
+
+            if ($builtData === null) {
+                return $themeJson;
+            }
+
+            return new \WP_Theme_JSON_Data($builtData, 'theme');
+        });
+    }
+
+    /**
+     * Show the theme's own styles inside the block editor.
+     *
+     * `add_theme_support('editor-styles')` only tells WordPress how to treat
+     * the styles it is handed; it never loads any. The themes register their
+     * assets with `toFrontend()`, so the editor had theme.json's variables and
+     * none of the rules built from them — blocks looked nothing like the front.
+     *
+     * The stylesheets have to go through `add_editor_style()` rather than
+     * `enqueue_block_editor_assets`: the post editor runs in an iframe, and
+     * what is enqueued lands in the admin page around it instead of inside.
+     */
+    private function registerEditorStyles(): void
+    {
+        $action = $this->app->make(Action::class);
+
+        // Late enough that the theme's own after_setup_theme has declared its
+        // supports, which is what this reads to decide.
+        $action->add('after_setup_theme', function (): void {
+            if (! function_exists('current_theme_supports') || ! current_theme_supports('editor-styles')) {
+                return;
+            }
+
+            $styles = $this->app->make(EditorStyleResolver::class)->resolve(get_stylesheet());
+
+            foreach ($styles as $style) {
+                // A full URL, because the build lives outside the theme
+                // directory that add_editor_style() resolves against.
+                add_editor_style(home_url('/'.$style));
+            }
+        }, 20);
+    }
+
+    /**
+     * Load theme configuration from config file.
+     *
+     * Merges the theme configuration into the application config.
+     */
+    private function loadThemeConfiguration(): void
+    {
+        $this->mergeConfigFrom(__DIR__.'/../../config/theme.php', 'theme');
+    }
+
+    /**
+     * Register console commands for theme management.
+     *
+     * Registers artisan commands for creating, removing, and checking
+     * theme status in development environment.
+     */
+    private function registerCommands(): void
+    {
+        $commands = [
+            'theme.generator' => fn ($app): MakeThemeCommand => new MakeThemeCommand($app->make('config'), $app->make('files')),
+            'theme.remover' => fn ($app): RemoveThemeCommand => new RemoveThemeCommand($app->make('config'), $app->make('files')),
+            'theme.status' => fn ($app): ThemeStatusCommand => new ThemeStatusCommand,
+            'theme.activator' => fn ($app): ThemeActivateCommand => new ThemeActivateCommand,
+        ];
+
+        foreach ($commands as $name => $factory) {
+            $this->app->singleton($name, $factory);
+        }
+
+        $this->commands(array_keys($commands));
+    }
+
+    /**
+     * Create domain container adapter instance.
+     *
+     * Factory method to create the adapter that bridges the domain
+     * container interface with Laravel's container implementation.
+     *
+     * @param  mixed  $app  Laravel application container
+     * @return ContainerInterface Domain container adapter instance
+     */
+    private function createDomainContainer($app): ContainerInterface
+    {
+        return new DomainContainerAdapter($app);
+    }
+}

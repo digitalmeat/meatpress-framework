@@ -1,0 +1,11 @@
+--- a/wordpress-stubs.php
++++ b/wordpress-stubs.php
+@@ -139974,7 +139974,7 @@
+      *                       Default 'default'.
+      * @return string Translated text.
+      */
+-    function __($text, $domain = 'default')
++    function __wp($text, $domain = 'default')
+     {
+     }
+     /**

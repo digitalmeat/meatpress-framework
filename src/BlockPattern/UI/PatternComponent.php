@@ -1,0 +1,48 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\BlockPattern\UI;
+
+use Meatpress\BlockPattern\Domain\Contracts\PatternServiceInterface;
+use Meatpress\Hook\Domain\Contract\Action;
+use Meatpress\Theme\Domain\Contracts\ThemeComponent;
+use Psr\Container\ContainerInterface;
+
+/**
+ * ThemeComponent for registering Gutenberg patterns and categories.
+ *
+ * Hooks into WordPress to orchestrate registration via the application service.
+ */
+class PatternComponent implements ThemeComponent
+{
+    protected PatternServiceInterface $registrationService;
+
+    protected Action $action;
+
+    /**
+     * PatternComponent constructor.
+     */
+    public function __construct(protected ContainerInterface $app)
+    {
+        $this->registrationService = $this->app->get(PatternServiceInterface::class);
+        $this->action = $this->app->get(Action::class);
+    }
+
+    /**
+     * Register pattern functionality with WordPress.
+     *
+     * Hooks into WordPress 'init' action to register patterns and categories,
+     * but skips registration during WordPress installation.
+     */
+    public function register(): void
+    {
+        $this->action->add('init', function (): void {
+            if (function_exists('wp_installing') && wp_installing()) {
+                return;
+            }
+
+            $this->registrationService->registerAll();
+        });
+    }
+}

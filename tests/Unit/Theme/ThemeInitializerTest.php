@@ -1,0 +1,344 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Container\Container;
+use Meatpress\Config\Domain\Contracts\ConfigRepositoryInterface;
+use Meatpress\Hook\Domain\Contract\Action;
+use Meatpress\Hook\Domain\Contract\Filter;
+use Meatpress\Theme\Domain\Contracts\ContainerInterface;
+use Meatpress\Theme\Domain\Contracts\ContentUrlResolverInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeAssetUrlResolverInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeModuleInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeRegistrarInterface;
+use Meatpress\Theme\Domain\Contracts\ThemeService;
+use Meatpress\Theme\Domain\Contracts\WordPressThemeInterface;
+use Meatpress\Theme\Domain\Models\ThemeInitializer;
+use Mockery as m;
+use Mockery\MockInterface;
+
+require_once __DIR__.'/../helpers.php';
+
+/**
+ * What this file is actually for.
+ *
+ * ThemeInitializer decides the value WordPress gets for `stylesheet_root` and
+ * `template_root`, and getting it wrong is what fix 4 of v13.32.0-beta.3 was:
+ * the front end renders perfectly while `wp_get_theme()` reports the theme
+ * missing, because that option points at the theme's own directory instead of
+ * the directory that holds it. WordPress joins the root with the stylesheet
+ * name, so one level too deep gives `themes/default/default`.
+ *
+ * The decision lives in a private method with six collaborators, which is why
+ * it had no test and was only ever verified on a live site. It has a seam all
+ * the same: every collaborator arrives through the container, and the method
+ * is reached through the `after_setup_theme` callback the initializer
+ * registers. Capturing that callback is enough to drive it.
+ */
+
+/**
+ * The constructor falls back to base_path('themes'), which Laravel's helper
+ * resolves through the container — eagerly, as a default argument, whether or
+ * not the fallback is used. So the container has to answer.
+ */
+beforeEach(function (): void {
+    $this->previousContainer = Container::getInstance();
+
+    Container::setInstance(new class extends Container
+    {
+        public function basePath($path = ''): string
+        {
+            return '/srv/site'.($path === '' ? '' : DIRECTORY_SEPARATOR.$path);
+        }
+    });
+});
+
+afterEach(function (): void {
+    Container::setInstance($this->previousContainer);
+});
+
+/**
+ * Build an initializer whose collaborators are all doubles, and hand back the
+ * hooks it registered so the test can fire them.
+ *
+ * @param  string|null  $themePath  the active theme's own directory, or null for no active theme
+ * @param  array<string, string>  $built  the files the asset build knows, and the URL it gave each
+ * @param  ThemeAssetUrlResolverInterface|null  $assetUrl  a resolver to use instead of one answering from $built
+ * @return array{initializer: ThemeInitializer, actions: array<string, callable>, filters: array<string, callable>, directories: ArrayObject<int, string>}
+ */
+function initializerUnderTest(?string $themePath, array $built = [], ?ThemeAssetUrlResolverInterface $assetUrl = null): array
+{
+    $actions = [];
+    $filters = [];
+    // An ArrayObject, not an array: the closure below records into it after
+    // this function has already returned its result.
+    $directories = new ArrayObject;
+
+    // add() returns the hook object for chaining, so the doubles have to hand
+    // themselves back rather than null.
+    $action = m::mock(Action::class);
+    $action->shouldReceive('add')->andReturnUsing(
+        function (string $hook, callable $callback, ...$rest) use (&$actions, &$action): MockInterface {
+            $actions[$hook] = $callback;
+
+            return $action;
+        }
+    );
+
+    $filter = m::mock(Filter::class);
+    $filter->shouldReceive('add')->andReturnUsing(
+        function (string $hook, callable $callback, ...$rest) use (&$filters, &$filter): MockInterface {
+            $filters[$hook] = $callback;
+
+            return $filter;
+        }
+    );
+
+    $wpTheme = m::mock(WordPressThemeInterface::class);
+    $wpTheme->shouldReceive('registerThemeDirectory')->andReturnUsing(
+        function (string $path) use (&$directories): bool {
+            $directories[] = $path;
+
+            return true;
+        }
+    );
+    $wpTheme->shouldReceive('getTheme')->andReturn(new stdClass);
+
+    $module = null;
+
+    if ($themePath !== null) {
+        $module = m::mock(ThemeModuleInterface::class);
+        $module->shouldReceive('getPath')->andReturn($themePath);
+        $module->shouldReceive('getName')->andReturn(basename($themePath));
+    }
+
+    $registrar = m::mock(ThemeRegistrarInterface::class);
+    $registrar->shouldReceive('getActiveTheme')->andReturn($module);
+
+    $themeService = m::mock(ThemeService::class);
+    $themeService->shouldReceive('load')->andReturnNull();
+
+    $contentUrl = m::mock(ContentUrlResolverInterface::class);
+    $contentUrl->shouldReceive('contentUrl')->andReturnUsing(
+        fn (string $path = ''): string => 'https://example.test/content'.($path === '' ? '' : '/'.$path)
+    );
+
+    if (! $assetUrl instanceof ThemeAssetUrlResolverInterface) {
+        $assetUrl = m::mock(ThemeAssetUrlResolverInterface::class);
+        $assetUrl->shouldReceive('assetUrl')->andReturnUsing(fn (string $file): string => $built[$file] ?? '');
+    }
+
+    $container = m::mock(ContainerInterface::class);
+    $container->shouldReceive('get')->with(ContentUrlResolverInterface::class)->andReturn($contentUrl);
+    $container->shouldReceive('get')->with(ThemeAssetUrlResolverInterface::class)->andReturn($assetUrl);
+    $container->shouldReceive('get')->with(Action::class)->andReturn($action);
+    $container->shouldReceive('get')->with(Filter::class)->andReturn($filter);
+    $container->shouldReceive('get')->with(WordPressThemeInterface::class)->andReturn($wpTheme);
+    $container->shouldReceive('get')->with(ThemeRegistrarInterface::class)->andReturn($registrar);
+    $container->shouldReceive('get')->with(ThemeService::class)->andReturn($themeService);
+    $container->shouldReceive('get')->andReturn($themeService);
+    $container->shouldReceive('registerProvider')->andReturnNull();
+    $container->shouldReceive('bindShared')->andReturnNull();
+
+    $config = m::mock(ConfigRepositoryInterface::class);
+    $config->shouldReceive('get')->andReturnUsing(fn (string $key, mixed $default = null): mixed => $default);
+
+    $initializer = new ThemeInitializer($container, $config);
+    $initializer->register();
+
+    return [
+        'initializer' => $initializer,
+        'actions' => $actions,
+        'filters' => $filters,
+        'directories' => $directories,
+    ];
+}
+
+describe('ThemeInitializer', function (): void {
+    it('registers the directory that holds the theme, not the theme itself', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        ($harness['actions']['after_setup_theme'])();
+
+        // One level up. WordPress appends the stylesheet name to this, so the
+        // theme's own path here would resolve to themes/default/default and
+        // wp_get_theme() would report the theme missing.
+        expect($harness['directories']->getArrayCopy())->toBe(['/srv/site/themes']);
+    });
+
+    it('feeds stylesheet_root and template_root the same directory', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        ($harness['actions']['after_setup_theme'])();
+
+        // Both options exist and WordPress consults them separately;
+        // disagreeing is what makes the admin and the front end differ.
+        expect(($harness['filters']['pre_option_stylesheet_root'])(false))->toBe('/srv/site/themes')
+            ->and(($harness['filters']['pre_option_template_root'])(false))->toBe('/srv/site/themes');
+    });
+
+    it('overrides whatever stale absolute path wp_options holds', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        ($harness['actions']['after_setup_theme'])();
+
+        // The filter is pre_option_*, so it is handed the stored value. A site
+        // moved between machines carries the old absolute path in the
+        // database; ignoring the argument is the point.
+        expect(($harness['filters']['pre_option_stylesheet_root'])('/home/old/build/themes'))
+            ->toBe('/srv/site/themes');
+    });
+
+    it('handles a theme nested deeper than one level', function (): void {
+        $harness = initializerUnderTest('/srv/site/public/content/themes/apiary');
+
+        ($harness['actions']['after_setup_theme'])();
+
+        expect($harness['directories']->getArrayCopy())->toBe(['/srv/site/public/content/themes']);
+    });
+
+    it('registers no directory when no theme is active', function (): void {
+        $harness = initializerUnderTest(null);
+
+        ($harness['actions']['after_setup_theme'])();
+
+        // A site with no theme is a supported state — it is what the web
+        // installer leaves behind — and must not have a root invented for it.
+        expect($harness['directories']->getArrayCopy())->toBe([]);
+    });
+});
+
+/**
+ * The theme URI filters.
+ *
+ * Both answers were wrong on every Meatpress site, and neither failed loudly.
+ * `get_theme_file_uri()` returned an empty string for every path there is,
+ * because the filter rebuilt the file name by subtracting a URL from a URL and
+ * then handed the asset resolver a path it prefixes again. And the URL the
+ * theme root resolved to was the server's filesystem path, which WordPress
+ * printed into the head of every public page through its speculative-loading
+ * rules.
+ */
+describe('theme URI filters', function (): void {
+    it("hands back WordPress's own answer when the build knows nothing of the file", function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+        $filter = $harness['filters']['theme_file_uri'];
+
+        // Not '': a caller that gets WordPress's answer can see what went
+        // wrong. Every call used to return the empty string.
+        expect($filter('https://example.test/themes/default/style.css', 'style.css'))
+            ->toBe('https://example.test/themes/default/style.css');
+    });
+
+    it('answers with the URL the build gave the file', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default', [
+            'app.js' => 'https://example.test/build/theme/default/assets/app-4f2a.js',
+        ]);
+        $filter = $harness['filters']['theme_file_uri'];
+
+        expect($filter('https://example.test/themes/default/app.js', 'app.js'))
+            ->toBe('https://example.test/build/theme/default/assets/app-4f2a.js');
+    });
+
+    it('falls back to WordPress when the asset resolver throws', function (): void {
+        $resolver = m::mock(ThemeAssetUrlResolverInterface::class);
+        $resolver->shouldReceive('assetUrl')->andThrow(new RuntimeException('No logger bound'));
+
+        $harness = initializerUnderTest('/srv/site/themes/default', assetUrl: $resolver);
+        $filter = $harness['filters']['theme_file_uri'];
+
+        expect($filter('https://example.test/themes/default/app.js', 'app.js'))
+            ->toBe('https://example.test/themes/default/app.js');
+    });
+
+    it('does not try to resolve a file it was not given', function (mixed $file): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+        $filter = $harness['filters']['theme_file_uri'];
+
+        expect($filter('https://example.test/themes/default', $file))
+            ->toBe('https://example.test/themes/default');
+    })->with([
+        'nothing' => [''],
+        'whitespace' => ['   '],
+        'not a string' => [null],
+    ]);
+
+    it('replaces a theme root that is a filesystem path', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        // WordPress falls back to the path itself for a theme root it cannot
+        // map, and prints it into every page's speculative-loading rules.
+        expect(($harness['filters']['theme_root_uri'])('/srv/site/themes'))
+            ->toBe('https://example.test/content/themes');
+    });
+
+    it('leaves a theme root alone when WordPress already resolved a URL', function (string $uri): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        // A project keeping its themes under content is mapped by WordPress
+        // itself and must not be touched.
+        expect(($harness['filters']['theme_root_uri'])($uri))->toBe($uri);
+    })->with([
+        'https' => ['https://example.test/content/themes'],
+        'http' => ['http://example.test/content/themes'],
+        'protocol relative' => ['//example.test/content/themes'],
+    ]);
+
+    it('leaves a theme root alone when it is not a string at all', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        expect(($harness['filters']['theme_root_uri'])(false))->toBeFalse();
+    });
+});
+
+/**
+ * Which spellings of a theme-relative file are looked for in the manifest.
+ *
+ * The asset container prefixes every lookup with its own root; the caller
+ * spells the path from the theme root. Getting this wrong is what produced
+ * `resources/assets/resources/assets/app.js` and an empty string for every
+ * call.
+ */
+describe('manifest candidates', function (): void {
+    it('takes the container root off a path that already carries it', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        expect($harness['initializer']->manifestCandidates('resources/assets/app.js', 'resources/assets/'))
+            ->toBe(['app.js', 'resources/assets/app.js']);
+    });
+
+    it('passes through a path already relative to the container root', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        expect($harness['initializer']->manifestCandidates('fonts/Inter.woff2', 'resources/assets/'))
+            ->toBe(['fonts/Inter.woff2']);
+    });
+
+    it('does not mistake a prefix for a directory', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        // `resources/assets-legacy/` starts with the root's characters but is
+        // a different directory.
+        expect($harness['initializer']->manifestCandidates('resources/assets-legacy/app.js', 'resources/assets'))
+            ->toBe(['resources/assets-legacy/app.js']);
+    });
+
+    it('ignores how the paths were punctuated', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        expect($harness['initializer']->manifestCandidates('/resources/assets/app.js', '/resources/assets/'))
+            ->toBe(['app.js', 'resources/assets/app.js']);
+    });
+
+    it('copes with a container that has no root', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        expect($harness['initializer']->manifestCandidates('app.js', ''))->toBe(['app.js']);
+    });
+
+    it('offers nothing for a file name that is not one', function (): void {
+        $harness = initializerUnderTest('/srv/site/themes/default');
+
+        expect($harness['initializer']->manifestCandidates('resources/assets/', 'resources/assets'))->toBe([]);
+    });
+});

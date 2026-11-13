@@ -1,0 +1,132 @@
+<?php
+
+declare(strict_types=1);
+
+return [
+    /**
+     * WordPress route conditions.
+     *
+     * Maps WordPress conditional functions to their route aliases.
+     * Key = WordPress function name, Value = alias(es) for routing.
+     * Multiple aliases can be defined as an array.
+     * These conditions are used by Route::wordpress() and Route::wp() methods.
+     */
+    'conditions' => [
+        // Error and special pages
+        'is_404' => ['404', 'not_found'],
+        'is_search' => 'search',
+        'is_paged' => 'paged',
+
+        // Homepage and blog index
+        'is_front_page' => ['/', 'front'],
+        'is_home' => ['home', 'blog'],
+
+        // Specific template
+        'is_page_template' => 'template',
+
+        // Custom post type hierarchy
+        'is_singular' => 'singular',
+        'is_single' => 'single',
+        'is_attachment' => 'attachment',
+        'is_post_type_archive' => ['post-type-archive', 'postTypeArchive'],
+        'is_archive' => 'archive',
+
+        // Taxonomies
+        'is_category' => ['category', 'cat'],
+        'is_tag' => 'tag',
+        'is_tax' => 'tax',
+
+        // Time hierarchy
+        'is_date' => 'date',
+        'is_year' => 'year',
+        'is_month' => 'month',
+        'is_day' => 'day',
+        'is_time' => 'time',
+
+        // Others conditions
+        'is_author' => 'author',
+        'is_sticky' => 'sticky',
+        'is_subpage' => ['subpage', 'subpageof'],
+    ],
+
+    /**
+     * Mail handling configuration.
+     *
+     * Controls whether Meatpress framework should handle WordPress mail functionality.
+     * When enabled (true), Meatpress overrides the wp_mail function to use Laravel's mail system.
+     * When disabled (false), WordPress will use its native mail handling.
+     */
+    'enable_mail_handling' => true,
+
+    /**
+     * Laravel session on Route::wp() routes.
+     *
+     * Routes declared in routes/web.php inherit the `web` group, which starts a
+     * session (a row in the sessions table and two cookies) on every request.
+     * Set to false to leave the session, error-sharing and CSRF middleware off
+     * Route::wp() routes; Laravel-native routes are not affected.
+     * csrf_token(), old() and flash data then have nothing to read from.
+     */
+    'sessions' => true,
+
+    // Kept so this release adds nothing to remove from your config: meatpress/woocommerce sets the same
+    // conditions itself, and these keys go with the next major release.
+    'plugin_conditions' => [
+        'woocommerce' => [
+            // WooCommerce conditions
+            'is_shop' => 'shop',
+            'is_product' => 'product',
+            'is_cart' => 'cart',
+            'is_checkout' => 'checkout',
+            'is_account_page' => 'account',
+            'is_product_category' => 'product_category',
+            'is_product_tag' => 'product_tag',
+            'is_wc_endpoint_url' => 'wc_endpoint',
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Lightweight API Mode
+    |--------------------------------------------------------------------------
+    |
+    | Requests to /api/* automatically load WordPress in lightweight mode:
+    | no plugins are loaded by default, dramatically reducing bootstrap time.
+    |
+    | If specific API routes need a plugin (e.g., WooCommerce for product data),
+    | list its directory name here. Only these plugins will be loaded for /api/ requests.
+    |
+    | Glob patterns are supported:
+    |   'api_plugins' => ['woocommerce*'],  // woocommerce, woocommerce-subscriptions, etc.
+    |   'api_plugins' => ['woocommerce', 'advanced-custom-fields-pro'],
+    |
+    | Use ['*'] or null to load all plugins (disable lightweight mode).
+    |
+    */
+    'api_plugins' => [],
+
+    'constants' => [
+        // WordPress authentication keys and salts
+        'auth_key' => env('AUTH_KEY'),
+        'secure_auth_key' => env('SECURE_AUTH_KEY'),
+        'logged_in_key' => env('LOGGED_IN_KEY'),
+        'nonce_key' => env('NONCE_KEY'),
+        'auth_salt' => env('AUTH_SALT'),
+        'secure_auth_salt' => env('SECURE_AUTH_SALT'),
+        'logged_in_salt' => env('LOGGED_IN_SALT'),
+        'nonce_salt' => env('NONCE_SALT'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Cache Control
+    |--------------------------------------------------------------------------
+    |
+    | Configure HTTP cache headers for non-authenticated visitors.
+    | These headers are applied by the WordPressHeaders middleware.
+    |
+    */
+    'cache' => [
+        'max_age' => (int) env('WP_CACHE_MAX_AGE', 3600),
+    ],
+];

@@ -1,0 +1,24 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Attributes\WpCli;
+
+use Attribute;
+
+/**
+ * WP CLI Before Invoke Attribute
+ *
+ * Defines a callback to execute before invoking the command.
+ * The callback can be a method name or a callable array.
+ */
+#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
+final readonly class BeforeInvoke
+{
+    /**
+     * Create a new Before Invoke attribute.
+     */
+    public function __construct(
+        public string|array $callback
+    ) {}
+}

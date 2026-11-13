@@ -1,0 +1,162 @@
+{
+    "name": "digitalmeat/meatpress-framework",
+    "description": "Meatpress: the MEAT Code framework that runs WordPress inside a Laravel application.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "meatpress",
+        "meatcode",
+        "laravel",
+        "wordpress"
+    ],
+    "require": {
+        "php": "^8.3",
+        "ext-mbstring": "*",
+        "digitalmeat/meatpress-helpers": "^13.0",
+        "bordoni/phpass": "0.3.*",
+        "coduo/php-humanizer": "5.0.3",
+        "cweagans/composer-patches": "^2.0",
+        "illuminate/auth": "^13.42",
+        "illuminate/collections": "^13.42",
+        "illuminate/config": "^13.42",
+        "illuminate/console": "^13.42",
+        "illuminate/contracts": "^13.42",
+        "illuminate/database": "^13.42",
+        "illuminate/routing": "^13.42",
+        "illuminate/support": "^13.42",
+        "johnbillion/extended-cpts": "^5.0.3",
+        "laravel/prompts": "^0.3.26",
+        "league/flysystem": "^3.0",
+        "log1x/sage-directives": "^2.0",
+        "nesbot/carbon": "^3.0",
+        "nwidart/laravel-modules": "^13.3",
+        "psr/container": "^2.0",
+        "psr/log": "^3.0",
+        "psr/simple-cache": "^3.0",
+        "roots/bedrock-autoloader": "^1.1",
+        "spatie/php-structure-discoverer": "^2.4",
+        "symfony/process": "^7.4 || ^8.0",
+        "thunderer/shortcode": "^0.7.3",
+        "watson/rememberable": "^7.1"
+    },
+    "require-dev": {
+        "antecedent/patchwork": "^2.2",
+        "brain/monkey": "^2.7",
+        "fakerphp/faker": "^1.19",
+        "laravel/legacy-factories": "^1.0",
+        "laravel/pint": "^1.22",
+        "laravel/serializable-closure": "^2.0",
+        "mockery/mockery": "^1.6.12",
+        "orchestra/testbench": "^11.3.0",
+        "pestphp/pest": "^3.8.2",
+        "php-stubs/wordpress-stubs": "^7.1",
+        "spatie/invade": "^2.1",
+        "symfony/var-dumper": "^7.4 || ^8.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Meatpress\\": "src/",
+            "Meatpress\\Abilities\\": "packages/abilities/src/",
+            "Meatpress\\Ajax\\": "packages/ajax/src/",
+            "Meatpress\\Asset\\": "packages/assets/src/",
+            "Meatpress\\Attributes\\": [
+                "packages/attributes/src/",
+                "packages/discovery/attributes/"
+            ],
+            "Meatpress\\BlockBinding\\Domain\\Enums\\": "packages/attributes/vocabulary/BlockBinding/",
+            "Meatpress\\Meta\\Domain\\Enums\\": "packages/attributes/vocabulary/Meta/",
+            "Meatpress\\Role\\Domain\\Enums\\": "packages/attributes/vocabulary/Role/",
+            "Meatpress\\Schedule\\": [
+                "packages/attributes/vocabulary/Schedule/",
+                "packages/schedule/src/"
+            ],
+            "Meatpress\\BlockBinding\\": "packages/block-bindings/src/",
+            "Meatpress\\Colt\\": "packages/colt/src/",
+            "Meatpress\\Discovery\\": "packages/discovery/src/",
+            "Meatpress\\Entity\\": "packages/entity/src/",
+            "Meatpress\\Hook\\": "packages/hook/src/",
+            "Meatpress\\Media\\": "packages/media/src/",
+            "Meatpress\\Meta\\": "packages/meta/src/",
+            "Meatpress\\Option\\": "packages/option/src/",
+            "Meatpress\\Query\\": "packages/query/src/",
+            "Meatpress\\Role\\": "packages/roles/src/",
+            "Meatpress\\WordPressArgs\\": "packages/wordpress-args/src/",
+            "Meatpress\\WpCli\\": "packages/wp-cli/src/",
+            "Meatpress\\WpRest\\": "packages/wp-rest/src/",
+            "Meatpress\\Support\\": "packages/wp-rest/support/"
+        },
+        "files": [
+            "src/helpers.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Meatpress\\Abilities\\Tests\\": "packages/abilities/tests/",
+            "Meatpress\\Ajax\\Tests\\": "packages/ajax/tests/",
+            "Meatpress\\Asset\\Tests\\": "packages/assets/tests/",
+            "Meatpress\\Attributes\\Tests\\": "packages/attributes/tests/",
+            "Meatpress\\BlockBinding\\Tests\\": "packages/block-bindings/tests/",
+            "Meatpress\\Colt\\Tests\\": "packages/colt/tests/",
+            "Meatpress\\Discovery\\Tests\\": "packages/discovery/tests/",
+            "Meatpress\\Entity\\Tests\\": "packages/entity/tests/",
+            "Meatpress\\Hook\\Tests\\": "packages/hook/tests/",
+            "Meatpress\\Media\\Tests\\": "packages/media/tests/",
+            "Meatpress\\Meta\\Tests\\": "packages/meta/tests/",
+            "Meatpress\\Option\\Tests\\": "packages/option/tests/",
+            "Meatpress\\Role\\Tests\\": "packages/roles/tests/",
+            "Meatpress\\Schedule\\Tests\\": "packages/schedule/tests/",
+            "Meatpress\\WpCli\\Tests\\": "packages/wp-cli/tests/",
+            "Meatpress\\WpRest\\Tests\\": "packages/wp-rest/tests/",
+            "Tests\\": "tests/",
+            "Workbench\\App\\": "workbench/app/",
+            "Workbench\\Database\\Factories\\": "workbench/database/factories/",
+            "Workbench\\Database\\Seeders\\": "workbench/database/seeders/"
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-main": "13.x-dev"
+        },
+        "laravel": {
+            "providers": [
+                "Meatpress\\Providers\\MeatpressServiceProvider",
+                "Meatpress\\Colt\\Laravel\\ColtServiceProvider",
+                "Meatpress\\Conventions\\ConventionsServiceProvider"
+            ],
+            "aliases": {
+                "Wordpress": "Meatpress\\Support\\WordPress",
+                "Action": "Meatpress\\Support\\Facades\\Action",
+                "Filter": "Meatpress\\Support\\Facades\\Filter",
+                "Hash": "Meatpress\\Support\\Facades\\WPHash",
+                "Ability": "Meatpress\\Support\\Facades\\Ability",
+                "Ajax": "Meatpress\\Support\\Facades\\Ajax",
+                "PostType": "Meatpress\\Support\\Facades\\PostType",
+                "Taxonomy": "Meatpress\\Support\\Facades\\Taxonomy",
+                "Theme": "Meatpress\\Support\\Facades\\Theme",
+                "Asset": "Meatpress\\Support\\Facades\\Asset"
+            }
+        }
+    },
+    "scripts": {
+        "lint": "pint",
+        "test:lint": "pint --test",
+        "test": "pest"
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "cweagans/composer-patches": true,
+            "pestphp/pest-plugin": true,
+            "php-http/discovery": true,
+            "wikimedia/composer-merge-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/digitalmeat/meatpress-helpers"
+        }
+    ]
+}

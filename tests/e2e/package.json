@@ -1,0 +1,17 @@
+{
+  "name": "meatpress-framework-e2e",
+  "private": true,
+  "description": "Browser tests run against a real Meatpress site",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "22.20.5",
+    "@wordpress/e2e-test-utils-playwright": "3.1.0"
+  }
+}

@@ -1,0 +1,30 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\VersionCheck\Domain\Contracts;
+
+/**
+ * Contract for checking Meatpress framework version information.
+ *
+ * Implementations are responsible for determining the currently installed
+ * version and fetching the latest available version from a remote source.
+ * The framework's own implementation, PackagistVersionChecker, lives in the
+ * Infrastructure layer of this module and asks Packagist.
+ */
+interface VersionCheckerInterface
+{
+    /**
+     * Get the latest stable version available from the remote source.
+     *
+     * @return string|null The latest version string (e.g. "13.3.0"), or null if unavailable
+     */
+    public function getLatestVersion(): ?string;
+
+    /**
+     * Get the currently installed version of the Meatpress framework.
+     *
+     * @return string|null The current version string (e.g. "13.3.0"), or null if undetermined
+     */
+    public function getCurrentVersion(): ?string;
+}

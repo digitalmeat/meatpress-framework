@@ -1,0 +1,13 @@
+/vendor/
+/node_modules/
+/composer.lock
+/phpunit.xml
+/.phpunit.cache
+/.phpunit.result.cache
+/workbench/
+*.swp
+.DS_Store
+.idea/
+.claude/
+CLAUDE.md
+AGENTS.md

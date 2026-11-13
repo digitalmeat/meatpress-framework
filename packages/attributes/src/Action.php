@@ -1,0 +1,16 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Attributes;
+
+use Attribute;
+
+/**
+ * Class Action
+ *
+ * Attribute for WordPress actions.
+ * This class is used to define an action hook in WordPress.
+ */
+#[Attribute(Attribute::TARGET_METHOD | Attribute::IS_REPEATABLE)]
+class Action extends Hook {}

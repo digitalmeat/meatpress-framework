@@ -1,0 +1,25 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Role\Domain\Models;
+
+/**
+ * Capabilities granted to or removed from a role the project does not own, with `#[ModifyRole]`.
+ */
+final readonly class RoleModification
+{
+    /**
+     * @param  string  $declaringClass  The class that declares it, or the call that does
+     */
+    public function __construct(
+        public string $slug,
+        public RoleChanges $changes,
+        public string $declaringClass,
+    ) {}
+
+    public function withChanges(RoleChanges $changes): self
+    {
+        return new self($this->slug, $changes, $this->declaringClass);
+    }
+}

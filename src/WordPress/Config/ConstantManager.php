@@ -1,0 +1,66 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\WordPress\Config;
+
+use Illuminate\Support\Collection;
+use Meatpress\WordPress\Exceptions\UndefinedConstantException;
+
+class ConstantManager
+{
+    /**
+     * Collection of constants to be registered
+     *
+     * @var Collection<string, mixed>
+     */
+    protected Collection $constants;
+
+    public function __construct()
+    {
+        $this->constants = collect();
+    }
+
+    /**
+     * Queue a constant for definition
+     */
+    public function queue(string $key, mixed $value): void
+    {
+        if ($this->isDefined($key)) {
+            return;
+        }
+
+        $this->constants->put($key, $value);
+    }
+
+    /**
+     * Retrieve a queued constant
+     */
+    public function get(string $key): mixed
+    {
+        if (! $this->constants->has($key)) {
+            throw new UndefinedConstantException(sprintf("Constant '%s' has not been queued.", $key));
+        }
+
+        return $this->constants->get($key);
+    }
+
+    /**
+     * Apply all queued constants
+     */
+    public function apply(): void
+    {
+        $this->constants->each(fn ($value, $key): bool => define($key, $value));
+
+        // Clear the queue after application
+        $this->constants = collect();
+    }
+
+    /**
+     * Check if a constant is already defined
+     */
+    protected function isDefined(string $key): bool
+    {
+        return defined($key);
+    }
+}

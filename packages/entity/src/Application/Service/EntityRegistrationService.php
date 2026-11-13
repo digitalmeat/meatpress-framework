@@ -1,0 +1,49 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Entity\Application\Service;
+
+use Meatpress\Entity\Domain\Model\Entity;
+use Meatpress\Entity\Port\Out\EntityRegistryPort;
+
+/**
+ * Application service that manages the registration of entities with WordPress.
+ *
+ * This service is responsible for coordinating the process of preparing entity
+ * arguments and delegating the actual registration to the appropriate adapter.
+ */
+class EntityRegistrationService
+{
+    /**
+     * EntityRegistrationService constructor.
+     *
+     * @param  EntityRegistryPort  $entityRegistry  The entity registry port implementation
+     */
+    public function __construct(private readonly EntityRegistryPort $entityRegistry) {}
+
+    /**
+     * Register an entity with WordPress.
+     *
+     * This method prepares the arguments for the entity and registers it with WordPress
+     * using the entity registry adapter.
+     *
+     * @param  Entity  $entity  The entity to register
+     */
+    public function registerEntity(Entity $entity): void
+    {
+        // Hook the actual registration to WordPress init hook
+        \add_action('init', function () use ($entity): void {
+            $args = $entity->getArgs();
+
+            $args['names'] = $entity->getNames();
+
+            $args = $entity->translateArguments($args, $entity->getEntity());
+            $names = $args['names'] ?? [];
+            unset($args['names']);
+
+            $this->entityRegistry->register($entity->getSlug(), $args, $names);
+
+        }, $entity->getPriority());
+    }
+}

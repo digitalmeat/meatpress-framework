@@ -1,0 +1,85 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Auth;
+
+use Illuminate\Auth\AuthManager;
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\ServiceProvider;
+
+/**
+ * Service provider for WordPress authentication integration.
+ *
+ * This provider registers and configures WordPress authentication services,
+ * including custom guards and user providers. It integrates WordPress
+ * capabilities with Laravel's Gate system and handles the registration
+ * of authentication-related services in the container.
+ */
+class AuthServiceProvider extends ServiceProvider
+{
+    /**
+     * Register authentication services.
+     *
+     * Registers the WordPress authentication driver if the auth service is bound.
+     * This includes setting up the WordPress guard and user provider.
+     */
+    public function register(): void
+    {
+        if ($this->app->bound('auth')) {
+            $this->registerWordPressAuthDriver($this->app->make(AuthManager::class));
+        }
+    }
+
+    /**
+     * Register the WordPress authentication driver.
+     *
+     * Sets up the WordPress guard and user provider, and configures
+     * the WordPress capabilities gate.
+     *
+     * @param  AuthManager  $auth  The Laravel authentication manager
+     */
+    protected function registerWordPressAuthDriver(AuthManager $auth): void
+    {
+        $auth->extend('wp', function (Application $app, string $name, array $config) use ($auth): WordPressGuard {
+            $provider = $auth->createUserProvider($config['provider'] ?? null);
+
+            return new WordPressGuard($provider);
+        });
+
+        $auth->provider('wp', fn (Application $app, array $config): WordPressUserProvider => new WordPressUserProvider);
+
+        $this->registerWordPressGate();
+    }
+
+    /**
+     * Create a new WordPress guard instance.
+     *
+     * Configures and returns a new WordPress guard with the appropriate
+     * user provider based on the configuration.
+     *
+     * @param  AuthManager  $auth  The Laravel authentication manager
+     * @param  array<string, mixed>  $config  Guard configuration options
+     * @return WordPressGuard The configured WordPress guard instance
+     */
+    protected function createWordPressGuard(AuthManager $auth, array $config): WordPressGuard
+    {
+        $provider = $auth->createUserProvider($config['provider'] ?? null);
+
+        return new WordPressGuard($provider);
+    }
+
+    /**
+     * Register WordPress capabilities with Laravel's Gate.
+     *
+     * Integrates WordPress's user_can() function with Laravel's authorization system,
+     * allowing WordPress capabilities to be checked using Laravel's Gate facade.
+     * Registered unconditionally: this runs before WordPress is loaded, so the
+     * callback checks for user_can() itself when the Gate asks.
+     */
+    protected function registerWordPressGate(): void
+    {
+        Gate::after((new WordPressCapabilityGate)->__invoke(...));
+    }
+}

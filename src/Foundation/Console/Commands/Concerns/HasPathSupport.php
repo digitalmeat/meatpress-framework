@@ -1,0 +1,82 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Foundation\Console\Commands\Concerns;
+
+use InvalidArgumentException;
+use Symfony\Component\Console\Input\InputOption;
+
+trait HasPathSupport
+{
+    const PATH_OPTION = 'path';
+
+    /**
+     * Get the console command options for path support.
+     *
+     * @return array The path-related command options
+     */
+    protected function getPathOptions(): array
+    {
+        return [
+            [static::PATH_OPTION, null, InputOption::VALUE_OPTIONAL, 'The custom path to generate the class in'],
+        ];
+    }
+
+    /**
+     * Get the custom path from option.
+     *
+     * @return string|null The custom path if specified
+     */
+    protected function getPathOption(): ?string
+    {
+        return $this->option(static::PATH_OPTION);
+    }
+
+    /**
+     * Check if custom path option is specified.
+     *
+     * @return bool True if path option is set
+     */
+    protected function hasPathOption(): bool
+    {
+        return $this->option(static::PATH_OPTION) !== null;
+    }
+
+    /**
+     * Resolve custom path.
+     *
+     * @return string|null The resolved custom path
+     */
+    protected function resolvePath(): ?string
+    {
+        return $this->getPathOption();
+    }
+
+    /**
+     * Resolve custom path location.
+     *
+     * @return array{type: string, path: string, namespace: string}
+     *
+     * @throws InvalidArgumentException When custom path is empty
+     */
+    protected function resolveCustomPath(): array
+    {
+        $path = $this->resolvePath();
+
+        if (! $path) {
+            throw new InvalidArgumentException('Custom path cannot be empty when --path option is used.');
+        }
+
+        // Ensure absolute path
+        if (! str_starts_with((string) $path, '/')) {
+            $path = base_path($path);
+        }
+
+        return [
+            'type' => 'custom',
+            'path' => $path,
+            'namespace' => 'App', // Default namespace for custom paths
+        ];
+    }
+}

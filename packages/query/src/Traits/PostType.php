@@ -1,0 +1,17 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Meatpress\Query\Traits;
+
+trait PostType
+{
+    protected string|array $postType = 'any';
+
+    public function postType(string|array $postType): self
+    {
+        $this->postType = $postType;
+
+        return $this;
+    }
+}
