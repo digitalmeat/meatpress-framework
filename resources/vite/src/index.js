@@ -1,0 +1,255 @@
+import path from 'node:path';
+import fs from 'node:fs';
+import { globSync } from 'glob';
+import { version as viteVersion } from 'vite';
+import laravel, { refreshPaths } from 'laravel-vite-plugin';
+
+/**
+ * Where each kind of Meatpress package builds, relative to the project root, and
+ * how far its own root sits below the project's public directory.
+ */
+const TYPES = {
+    theme: {
+        // themes/<name>
+        publicDirectory: '../../public',
+        port: 5173,
+        reloadOn: ['.blade.php'],
+        assets: ['resources/assets/images/**', 'resources/assets/fonts/**'],
+    },
+    plugin: {
+        // public/content/plugins/<name>
+        publicDirectory: '../../../../public',
+        port: 5174,
+        reloadOn: ['.blade.php', '.php'],
+        assets: [],
+    },
+    module: {
+        // Modules/<Name>
+        publicDirectory: '../../public',
+        port: 5175,
+        reloadOn: ['.blade.php', '.php'],
+        assets: [],
+    },
+};
+
+const BLOCK_ENTRIES = [
+    './resources/views/blocks/*/{index,view}.{js,jsx,ts,tsx}',
+    './resources/views/blocks/*/{editor,style}.css',
+];
+
+const DEFAULT_INPUT = ['./resources/assets/app.js'];
+
+/**
+ * Turn a directory name into the slug the framework serves a module under:
+ * BlocksDemo → blocks-demo, as Str::kebab() does.
+ */
+export function kebab(name) {
+    return name
+        .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+        .replace(/[\s_]+/g, '-')
+        .toLowerCase();
+}
+
+/**
+ * Vite entries of every block script and stylesheet, keyed by path so blocks
+ * sharing a file name never overwrite each other.
+ */
+export function blockEntries(root) {
+    return globSync(BLOCK_ENTRIES, { cwd: root, posix: true })
+        .sort()
+        .reduce((entries, file) => {
+            entries[file.replace(/^\.\//, '').replace(/\.\w+$/, '')] = file;
+            return entries;
+        }, {});
+}
+
+function baseUrl() {
+    return process.env.APP_URL || process.env.DDEV_PRIMARY_URL || 'http://localhost';
+}
+
+function isDocker() {
+    return Boolean(process.env.IS_DOCKER || process.env.DOCKER_ENV || process.env.DDEV_PRIMARY_URL);
+}
+
+/**
+ * Vite 8.3.1 moved the WebSocket options from `server.hmr` to `server.ws` and
+ * deprecated the old place; earlier versions only know `server.hmr`.
+ */
+export function usesWsOption(version = viteVersion) {
+    const [major, minor, patch] = version.split('.').map((part) => parseInt(part, 10));
+
+    return major > 8 || (major === 8 && (minor > 3 || (minor === 3 && patch >= 1)));
+}
+
+/**
+ * Dev server reachable from the site: inside DDEV or Docker it listens on every
+ * interface and announces the site's own host, elsewhere it serves localhost.
+ */
+export function devServer(port) {
+    const url = baseUrl();
+    const isHttps = url.startsWith('https');
+    const hostname = new URL(url).hostname;
+    const socket = { protocol: isHttps ? 'wss' : 'ws', host: hostname };
+    const websocket = usesWsOption() ? { ws: socket } : { hmr: socket };
+    const common = {
+        port,
+        strictPort: true,
+        cors: {
+            origin: '*',
+            methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+            credentials: true,
+        },
+    };
+
+    if (isDocker()) {
+        return {
+            ...common,
+            host: '0.0.0.0',
+            origin: `${url}:${port}`,
+            ...websocket,
+        };
+    }
+
+    return {
+        ...common,
+        https: isHttps,
+        host: isHttps ? hostname : 'localhost',
+        ...websocket,
+    };
+}
+
+function resolvePort(option, fallback) {
+    const port = option ?? process.env.VITE_PORT;
+
+    return port === undefined || port === '' ? fallback : Number(port);
+}
+
+const LAYOUTS = ['meatpress', 'standalone'];
+
+/**
+ * Where a package builds, and where its dev server is announced.
+ *
+ * `meatpress` is a Meatpress project: every package builds under the project's
+ * public directory, as build/<type>/<name> with a <name>.hot file beside it.
+ * `standalone` is a classic theme, a plugin or a Bedrock site, which have no
+ * shared public directory: the package builds inside itself, into `build/`
+ * with a `hot` file at its root, and `base` is relative so the built CSS and
+ * chunks find each other wherever WordPress serves the folder from.
+ *
+ * @param {object} settings
+ * @returns {{ publicDirectory: string, buildDirectory: string, hotFile: string, base: string|null }}
+ */
+export function layoutOf({ layout, type, name, root, publicDirectory, buildDirectory, hotFile }) {
+    if (layout === 'standalone') {
+        return {
+            publicDirectory: publicDirectory ?? '.',
+            buildDirectory: buildDirectory ?? 'build',
+            hotFile: path.resolve(root, publicDirectory ?? '.', hotFile ?? 'hot'),
+            base: null,
+        };
+    }
+
+    return {
+        publicDirectory: publicDirectory ?? TYPES[type].publicDirectory,
+        buildDirectory: path.join('build', type, name),
+        hotFile: path.resolve(root, publicDirectory ?? TYPES[type].publicDirectory, `${name}.hot`),
+        base: `/build/${type}/${name}`,
+    };
+}
+
+/**
+ * The Vite plugins a Meatpress theme, plugin or module builds with.
+ *
+ * @param {import('./index').MeatpressOptions} options
+ * @returns {import('vite').PluginOption[]}
+ */
+export default function meatpress(options = {}) {
+    const type = options.type;
+
+    if (!TYPES[type]) {
+        throw new Error(`@meatpress/vite-config: "type" must be one of ${Object.keys(TYPES).join(', ')}, got ${JSON.stringify(type)}.`);
+    }
+
+    const layout = options.layout ?? 'meatpress';
+
+    if (!LAYOUTS.includes(layout)) {
+        throw new Error(`@meatpress/vite-config: "layout" must be one of ${LAYOUTS.join(', ')}, got ${JSON.stringify(layout)}.`);
+    }
+
+    const defaults = TYPES[type];
+    const root = path.resolve(options.root ?? process.cwd());
+    const directoryName = path.basename(root);
+    const name = options.name ?? (type === 'module' ? kebab(directoryName) : directoryName);
+    // Relative to the package root: laravel-vite-plugin strips a leading slash
+    const { publicDirectory, buildDirectory, hotFile, base } = layoutOf({
+        layout, type, name, root,
+        publicDirectory: options.publicDirectory,
+        buildDirectory: options.buildDirectory,
+        hotFile: options.hotFile,
+    });
+    const port = resolvePort(options.port, defaults.port);
+
+    const blocks = options.blocks === false ? {} : blockEntries(root);
+    const hasBlocks = Object.keys(blocks).length > 0;
+    const input = (options.input ?? DEFAULT_INPUT.filter((file) => fs.existsSync(path.join(root, file))));
+
+    // File endings that reload the whole page in development (block themes add .html)
+    const reloadOn = options.reloadOn ?? defaults.reloadOn;
+    const refresh = [
+        // A literal resources/views/** turns every block JSX change into a full reload
+        ...refreshPaths.filter((refreshPath) => refreshPath !== 'resources/views/**'),
+        'resources/views/**/*.blade.php',
+        ...(reloadOn.includes('.php') ? ['app/**/*.php'] : []),
+        ...(options.refresh ?? []),
+    ];
+
+    const plugins = [
+        {
+            name: 'meatpress:config',
+            // A standalone build is relative to wherever it is served from; its dev server serves from the root
+            config: (config, { command }) => ({
+                ...(base === null ? (command === 'build' ? { base: './' } : {}) : { base }),
+                build: { emptyOutDir: false },
+                server: devServer(port),
+            }),
+        },
+    ];
+
+    if (options.tailwind !== false) {
+        plugins.push(import('@tailwindcss/vite').then((module) => module.default()));
+    }
+
+    plugins.push(laravel({
+        input: [...input, ...Object.values(blocks)],
+        publicDirectory,
+        // Written from the working directory, unlike the build directory resolved from the root
+        hotFile,
+        buildDirectory,
+        refresh,
+        assets: options.assets ?? defaults.assets,
+    }));
+
+    if (type === 'theme' && options.themeJson !== false) {
+        plugins.push(import('@roots/vite-plugin').then(({ wordpressThemeJson }) => wordpressThemeJson({
+            baseThemeJsonPath: './theme.json',
+            ...(options.themeJson ?? {}),
+        })));
+    }
+
+    if (hasBlocks) {
+        plugins.push(import('@roots/vite-plugin').then(({ wordpressPlugin }) => wordpressPlugin(options.wordpress ?? {})));
+    }
+
+    plugins.push({
+        name: 'meatpress:blade-reload',
+        handleHotUpdate({ file, server }) {
+            if (reloadOn.some((extension) => file.endsWith(extension))) {
+                server.ws.send({ type: 'full-reload', path: '*' });
+            }
+        },
+    });
+
+    return plugins;
+}
+
+export { meatpress };

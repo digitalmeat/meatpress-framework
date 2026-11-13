@@ -2,7 +2,7 @@
 
 %module_description%
 
-A [Laravel module](https://laravelmodules.com) built with [Meatpress](https://github.com/digitalmeat/meatpress-docs) from the [module-default](https://github.com/digitalmeat/meatpress-framework) template.
+A [Laravel module](https://laravelmodules.com) built with [Meatpress](https://github.com/digitalmeat/meatpress-framework/tree/main/docs) from the [module-default](https://github.com/digitalmeat/meatpress-framework) template.
 
 ## What's inside
 

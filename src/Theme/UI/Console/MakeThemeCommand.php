@@ -582,12 +582,12 @@ class MakeThemeCommand extends BaseThemeCommand implements PromptsForMissingInpu
             ],
             'theme-author-uri' => [
                 'label' => 'What is the URL of the theme author?',
-                'default' => 'https://github.com/digitalmeat/meatpress-docs',
+                'default' => 'https://github.com/digitalmeat/meatpress-framework/tree/main/docs',
                 'validation' => 'required|url',
             ],
             'theme-uri' => [
                 'label' => 'What is the URL of the theme?',
-                'default' => 'https://github.com/digitalmeat/meatpress-docs',
+                'default' => 'https://github.com/digitalmeat/meatpress-framework/tree/main/docs',
                 'validation' => 'required|url',
             ],
             'theme-description' => [

@@ -18,7 +18,7 @@ final readonly class DashboardController
     /**
      * Meatpress website, home of the documentation.
      */
-    private const string WEBSITE_URL = 'https://github.com/digitalmeat/meatpress-docs';
+    private const string WEBSITE_URL = 'https://github.com/digitalmeat/meatpress-framework/tree/main/docs';
 
     public function __construct(
         private SystemInfoCollector $collector

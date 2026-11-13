@@ -327,12 +327,12 @@ class MakePluginCommand extends Command implements PromptsForMissingInput, Promp
             ],
             'plugin-author-uri' => [
                 'label' => 'What is the URL of the plugin author?',
-                'default' => 'https://github.com/digitalmeat/meatpress-docs',
+                'default' => 'https://github.com/digitalmeat/meatpress-framework/tree/main/docs',
                 'validation' => 'required|url',
             ],
             'plugin-uri' => [
                 'label' => 'What is the URL of the plugin?',
-                'default' => 'https://github.com/digitalmeat/meatpress-docs',
+                'default' => 'https://github.com/digitalmeat/meatpress-framework/tree/main/docs',
                 'validation' => 'required|url',
             ],
             'plugin-description' => [

@@ -36,7 +36,7 @@ function runCommandWithPromptDefaults(array $parameters, bool $interactive): arr
         {
             return [
                 'author' => ['label' => 'Author?', 'default' => 'Meatpress'],
-                'uri' => ['URI?', 'https://github.com/digitalmeat/meatpress-docs'],
+                'uri' => ['URI?', 'https://github.com/digitalmeat/meatpress-framework/tree/main/docs'],
                 'label' => 'Label?',
                 'tags' => ['label' => 'Tags?', 'default' => 'starter'],
             ];
@@ -131,7 +131,7 @@ describe('PromptsForMissingOption', function (): void {
             $options = runCommandWithPromptDefaults([], interactive: false);
 
             expect($options['author'])->toBe('Meatpress')
-                ->and($options['uri'])->toBe('https://github.com/digitalmeat/meatpress-docs')
+                ->and($options['uri'])->toBe('https://github.com/digitalmeat/meatpress-framework/tree/main/docs')
                 ->and($options['tags'])->toBe(['starter']);
         });
 

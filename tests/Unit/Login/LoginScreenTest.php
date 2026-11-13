@@ -169,7 +169,7 @@ describe('LoginScreen', function (): void {
 
         expect(ob_get_clean())
             ->toContain('class="meatpress-login-credit"')
-            ->toContain('https://github.com/digitalmeat/meatpress-docs')
+            ->toContain('https://github.com/digitalmeat/meatpress-framework/tree/main/docs')
             ->toContain('rel="noopener noreferrer"');
     });
 

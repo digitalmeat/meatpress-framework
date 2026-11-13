@@ -1,0 +1,48 @@
+{
+  "name": "@meatpress/vite-config",
+  "version": "1.0.0",
+  "description": "Vite configuration shared by Meatpress themes, plugins and modules",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/digitalmeat/meatpress-framework.git",
+    "directory": "resources/vite"
+  },
+  "keywords": [
+    "meatpress",
+    "vite",
+    "wordpress",
+    "laravel"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=20.19"
+  },
+  "dependencies": {
+    "glob": "^14.0.2"
+  },
+  "peerDependencies": {
+    "@roots/vite-plugin": "^2.0.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "laravel-vite-plugin": "^2.0.0 || ^3.0.0",
+    "vite": "^7.0.0 || ^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@roots/vite-plugin": {
+      "optional": true
+    },
+    "@tailwindcss/vite": {
+      "optional": true
+    }
+  }
+}

@@ -7,7 +7,7 @@
         "build": "vite build"
     },
     "devDependencies": {
-        "@meatpress/vite-config": "github:digitalmeat/meatpress-vite#semver:^1.0.0",
+        "@meatpress/vite-config": "github:digitalmeat/meatpress-framework#semver:^13.1&path:/resources/vite",
         "@roots/vite-plugin": "^2.0.0",
         "@tailwindcss/vite": "^4.2.3",
         "@wordpress/block-editor": "^14.0.0",

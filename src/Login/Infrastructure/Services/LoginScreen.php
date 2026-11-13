@@ -30,7 +30,7 @@ final class LoginScreen
     /**
      * Where the framework tells people it is the framework.
      */
-    private const string CREDIT_URL = 'https://github.com/digitalmeat/meatpress-docs';
+    private const string CREDIT_URL = 'https://github.com/digitalmeat/meatpress-framework/tree/main/docs';
 
     private ?string $css = null;
 

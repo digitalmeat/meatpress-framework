@@ -2,7 +2,7 @@
 
 The MEAT Code framework that runs **WordPress inside a Laravel 13 application**: Laravel routing, Blade, Eloquent and PHP attributes on the code side; the WordPress admin and plugins on the content side.
 
-New sites start from the [Meatpress skeleton](https://github.com/digitalmeat/meatpress), which requires this package. Documentation: [meatpress-docs](https://github.com/digitalmeat/meatpress-docs).
+New sites start from the [Meatpress skeleton](https://github.com/digitalmeat/meatpress), which requires this package. Documentation: [`docs/`](docs) (a VitePress site: `cd docs && pnpm install && pnpm dev`).
 
 ## What is inside
 
@@ -13,6 +13,8 @@ New sites start from the [Meatpress skeleton](https://github.com/digitalmeat/mea
 | `packages/` | The components the framework is built from, each with its own namespace: `Hook`, `Query`, `Attributes`, `Discovery`, `Entity`, `Media`, `Meta`, `Option`, `Role`, `Schedule`, `WpCli`, `WpRest`, `BlockBinding`, `Colt` (Eloquent models for WordPress), `Asset`, `Ajax`, `Abilities`, `WordPressArgs` |
 | `config/` | Framework configuration published to projects |
 | `resources/` | Views, translations, stubs |
+| `resources/vite/` | `@meatpress/vite-config`, the Vite configuration of themes, plugins and modules (npm package installed from this repository) |
+| `docs/` | The Meatpress documentation |
 
 The translation helper that lets Laravel and WordPress share `__()` lives in a separate package, [`digitalmeat/meatpress-helpers`](https://github.com/digitalmeat/meatpress-helpers): it must be autoloaded before Laravel's helpers, so it cannot depend on Laravel.
 
