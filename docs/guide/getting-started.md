@@ -13,7 +13,7 @@
 
 ```bash
 # 1. Copy the skeleton into a new repository
-git clone https://github.com/digitalmeat/meatpress.git client-website
+git clone https://github.com/digitalmeat/meatpress-base.git client-website
 cd client-website
 rm -rf .git && git init -b main
 gh repo create digitalmeat/client-website --private --source . --remote origin

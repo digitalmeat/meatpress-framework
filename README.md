@@ -2,7 +2,7 @@
 
 The MEAT Code framework that runs **WordPress inside a Laravel 13 application**: Laravel routing, Blade, Eloquent and PHP attributes on the code side; the WordPress admin and plugins on the content side.
 
-New sites start from the [Meatpress skeleton](https://github.com/digitalmeat/meatpress), which requires this package. Documentation: [`docs/`](docs) (a VitePress site: `cd docs && pnpm install && pnpm dev`).
+New sites start from the [Meatpress skeleton](https://github.com/digitalmeat/meatpress-base), which requires this package. Documentation: [`docs/`](docs) (a VitePress site: `cd docs && pnpm install && pnpm dev`).
 
 ## What is inside
 

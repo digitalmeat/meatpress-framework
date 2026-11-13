@@ -272,7 +272,7 @@ function runInstallWithoutDatabase(): array
 }
 
 /**
- * `composer create-project digitalmeat/meatpress` runs meatpress:install from the
+ * `composer create-project digitalmeat/meatpress-base` runs meatpress:install from the
  * skeleton's post-create-project-cmd. Without a database it stopped with
  * "Application environment is not configured. Aborting." and exit code 1,
  * so create-project ended on a failing script (Meatpress/meatpress#78).
