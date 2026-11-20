@@ -1,52 +1,50 @@
 # Meatpress Framework
 
-The MEAT Code framework that runs **WordPress inside a Laravel 13 application**: Laravel routing, Blade, Eloquent and PHP attributes on the code side; the WordPress admin and plugins on the content side.
+Meatpress Framework integrates WordPress with Laravel 13. Developers can use Laravel routing, Blade, and Eloquent while editors work in the WordPress admin.
 
-MEAT Code sites start from an internal skeleton that requires this package. Documentation: [`docs/`](docs) (a VitePress site: `cd docs && pnpm install && pnpm dev`).
+- Route requests through Laravel and render WordPress templates with Blade.
+- Register WordPress hooks, post types, taxonomies, and REST routes through PHP attributes.
+- Query WordPress data with Colt's Eloquent models.
+- Share Vite configuration across themes, plugins, and modules with `@meatpress/vite-config`.
 
-## What is inside
+## Getting started
 
-| Directory | |
-| --- | --- |
-| `src/` | The framework: WordPress bootstrap, routing (`Route::wp()`), template hierarchy, themes, plugins, modules, assets, Blade directives, console commands (`meatpress:*`) |
-| `src/Conventions/` | MEAT Code conventions: noindex outside production, searchable custom fields, clean `<head>`, ACF local JSON, `plugins:activate`, `salts:generate` — configured in `config/meatpress.php` |
-| `packages/` | The components the framework is built from, each with its own namespace: `Hook`, `Query`, `Attributes`, `Discovery`, `Entity`, `Media`, `Meta`, `Option`, `Role`, `Schedule`, `WpCli`, `WpRest`, `BlockBinding`, `Colt` (Eloquent models for WordPress), `Asset`, `Ajax`, `Abilities`, `WordPressArgs` |
-| `config/` | Framework configuration published to projects |
-| `resources/` | Views, translations, stubs |
-| `resources/vite/` | `@meatpress/vite-config`, the Vite configuration of themes, plugins and modules (npm package installed from this repository) |
-| `docs/` | The Meatpress documentation |
+MEAT Code projects use an internal starter that configures WordPress, the theme, and the required Composer patch.
 
-The translation helper that lets Laravel and WordPress share `__()` lives in a separate package, [`digitalmeat/meatpress-helpers`](https://github.com/digitalmeat/meatpress-helpers): it must be autoloaded before Laravel's helpers, so it cannot depend on Laravel.
-
-## Installation
-
-The packages are installed from GitHub, so the project declares both repositories:
-
-```json
-"repositories": [
-    { "type": "vcs", "url": "https://github.com/digitalmeat/meatpress-framework" },
-    { "type": "vcs", "url": "https://github.com/digitalmeat/meatpress-helpers" }
-]
-```
+To integrate Meatpress in an existing Laravel 13 project, register both public GitHub repositories with Composer and add the framework:
 
 ```bash
-composer require digitalmeat/meatpress-framework
+composer config repositories.meatpress-framework vcs https://github.com/digitalmeat/meatpress-framework
+composer config repositories.meatpress-helpers vcs https://github.com/digitalmeat/meatpress-helpers
+composer require digitalmeat/meatpress-framework:^13.0
 ```
 
-The project must also apply `patches/wordpress-core.patch` to `johnpbloch/wordpress-core` (the skeleton does): it renames WordPress's `__()` to `__wp()`.
+Configure your project to apply the [WordPress core patch](patches/wordpress-core.patch) to `johnpbloch/wordpress-core`. The patch renames WordPress's `__()` to `__wp()` so [Meatpress Helpers](https://github.com/digitalmeat/meatpress-helpers) can provide a shared translation function.
 
-## Development
+## Learning Meatpress
+
+Read the [documentation](docs), starting with the [routing and PHP attributes](docs/guide/code.md), and [framework conventions](docs/guide/conventions.md). To preview the documentation locally:
+
+```bash
+cd docs
+pnpm install
+pnpm dev
+```
+
+## Contributing
 
 ```bash
 composer install
-composer test        # Pest
-composer lint        # Pint
+composer test
+composer test:lint
 ```
 
-## Versioning
+Meatpress follows Laravel's major versions. See the [release guide](docs/guide/releasing.md) for tagging and publishing changes.
 
-Meatpress follows Laravel's major version: Meatpress 13.x runs on Laravel 13.x. Releases are Git tags (`v13.0.0`…).
+## Security vulnerabilities
+
+Report suspected vulnerabilities privately to the MEAT Code maintainers.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Meatpress Framework is licensed under the [MIT License](LICENSE).
