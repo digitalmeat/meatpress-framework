@@ -44,7 +44,7 @@ export default defineConfig({
         ],
       },
     ],
-    socialLinks: [{ icon: 'github', link: 'https://github.com/digitalmeat/meatpress-base' }],
+    socialLinks: [{ icon: 'github', link: 'https://github.com/digitalmeat/meatpress-framework' }],
     search: { provider: 'local' },
     outline: { label: 'En esta página' },
     docFooter: { prev: 'Anterior', next: 'Siguiente' },
