@@ -6,11 +6,11 @@ It replaces the Themosis base (`digitalmeat/themosis3.0`). MEAT Code owns and ma
 
 ## The pieces
 
-Three repositories, all private, in the `digitalmeat` organization. Day to day you work in the first two.
+Three repositories in the `digitalmeat` organization. The framework and the helpers are public; the skeleton is internal to MEAT Code. Day to day you work in the first two.
 
 | Repository | What it is |
 | --- | --- |
-| [`meatpress-base`](https://github.com/digitalmeat/meatpress-base) | The **skeleton**: Docker, plugins, `meat-theme`, tooling. A new site is a copy of it. |
+| `meatpress-base` (internal) | The **skeleton**: Docker, plugins, `meat-theme`, tooling. A new site is a copy of it. |
 | [`meatpress-framework`](https://github.com/digitalmeat/meatpress-framework) | The **framework** (Composer package `digitalmeat/meatpress-framework`): WordPress bootstrap, routing, template hierarchy, themes, modules, assets, attribute discovery, and the MEAT [conventions](./conventions). Sites depend on it, so a fix reaches all of them with `composer update`. |
 | [`meatpress-helpers`](https://github.com/digitalmeat/meatpress-helpers) | One `__()` for Laravel and WordPress. Separate because it must load before Laravel's helpers; it rarely changes. |
 

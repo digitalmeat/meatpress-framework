@@ -17,4 +17,4 @@ Hooks are installed by `pnpm install`.
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`) runs Pint, ESLint, Stylelint, Prettier and the theme build on every push and pull request. It does not run `composer install`, so it needs no token for the private packages.
+GitHub Actions (`.github/workflows/ci.yml`) runs Pint, ESLint, Stylelint, Prettier and the theme build on every push and pull request. It does not run `composer install`.

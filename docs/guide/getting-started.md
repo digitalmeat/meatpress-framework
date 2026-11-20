@@ -3,11 +3,7 @@
 ## Before the first project
 
 1. The shared MySQL container `mysqlserver` runs on the Docker network `localnetwork` (the same one the Themosis projects use).
-2. The Meatpress packages are private. Composer needs a GitHub token: add this to `~/.zshrc` (`docker-compose.yml` passes it to the `app` container). pnpm installs `@meatpress/vite-config` with git, so your GitHub credentials (SSH key or `gh auth setup-git`) are enough.
-
-   ```bash
-   export COMPOSER_AUTH="{\"github-oauth\":{\"github.com\":\"$(gh auth token)\"}}"
-   ```
+2. Access to the internal `digitalmeat/meatpress-base` repository. The framework and the helpers are public, so Composer and pnpm install them without credentials.
 
 ## Create the site
 

@@ -9,9 +9,9 @@ Meatpress Framework integrates WordPress with Laravel 13. Developers can use Lar
 
 ## Getting started
 
-Start a new site with [Meatpress Base](https://github.com/digitalmeat/meatpress-base). The starter configures the WordPress installation, theme, and required Composer patch.
+MEAT Code projects use an internal starter that configures WordPress, the theme, and the required Composer patch.
 
-To integrate the package in an existing Laravel 13 project, configure Composer access to both private repositories and add the framework:
+To integrate Meatpress in an existing Laravel 13 project, register both public GitHub repositories with Composer and add the framework:
 
 ```bash
 composer config repositories.meatpress-framework vcs https://github.com/digitalmeat/meatpress-framework
@@ -19,11 +19,11 @@ composer config repositories.meatpress-helpers vcs https://github.com/digitalmea
 composer require digitalmeat/meatpress-framework:^13.0
 ```
 
-Use the starter's [WordPress core patch](https://github.com/digitalmeat/meatpress-base/blob/main/patches/wordpress-core.patch) and [Composer configuration](https://github.com/digitalmeat/meatpress-base/blob/main/composer.json) as the integration reference. The patch renames WordPress's `__()` to `__wp()` so [Meatpress Helpers](https://github.com/digitalmeat/meatpress-helpers) can provide a shared translation function.
+Configure your project to apply the [WordPress core patch](patches/wordpress-core.patch) to `johnpbloch/wordpress-core`. The patch renames WordPress's `__()` to `__wp()` so [Meatpress Helpers](https://github.com/digitalmeat/meatpress-helpers) can provide a shared translation function.
 
 ## Learning Meatpress
 
-Read the [documentation](docs), starting with the [project setup](docs/guide/getting-started.md), [routing and PHP attributes](docs/guide/code.md), and [framework conventions](docs/guide/conventions.md). To preview the documentation locally:
+Read the [documentation](docs), starting with the [routing and PHP attributes](docs/guide/code.md), and [framework conventions](docs/guide/conventions.md). To preview the documentation locally:
 
 ```bash
 cd docs
@@ -32,8 +32,6 @@ pnpm dev
 ```
 
 ## Contributing
-
-With Composer access to the private Helpers repository, run:
 
 ```bash
 composer install
